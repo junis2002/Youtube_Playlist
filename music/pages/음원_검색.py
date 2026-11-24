@@ -4,7 +4,7 @@ from collections import Counter
 
 import streamlit as st
 
-from core.public_album import find_albums, load_album_tracks
+from core.public_album import find_albums, inspect_album_tracks
 from core.public_search import PublicSearchError, SearchResult, SongCandidate, export_url, search_songs
 
 REFERENCE_ID = "j1uXcHwLhHM"
@@ -139,19 +139,32 @@ def album_search(artist: str, known: bool) -> None:
             clear_tracks()
             try:
                 with st.spinner("앨범 트랙 조회 중…"):
-                    tracks = load_album_tracks(album)
+                    outcome = inspect_album_tracks(album)
             except (PublicSearchError, ValueError) as exc:
-                st.error(str(exc))
-            else:
-                st.session_state.public_album_tracks = (album.browse_id, tracks)
+                outcome = str(exc)
+            st.session_state.public_album_tracks = (album.browse_id, outcome)
         loaded = st.session_state.get("public_album_tracks")
-        if loaded and loaded[0] == album.browse_id:
-            tracks = loaded[1]
-            st.caption(f"TXT로 내보낼 수 있는 트랙 {sum(1 for song in tracks if song.video_id)}개")
-            if tracks:
-                show_songs(tracks, known, album_tracks=True)
-            else:
-                st.info("선택한 앨범에 조회된 트랙이 없습니다.")
+        if not loaded or loaded[0] != album.browse_id:
+            return
+        report = loaded[1]
+        if isinstance(report, str):
+            st.error(report)
+            playlist_id = album.audio_playlist_id
+        else:
+            st.caption(f"공개 앨범 응답의 수록곡 {report.raw_count}개 · TXT로 내보낼 수 있는 트랙 {len(report.tracks)}개")
+            if report.excluded:
+                st.caption("제외 사유 · " + " · ".join(f"{reason} {count}개" for reason, count in report.excluded.items()))
+            if report.tracks:
+                show_songs(report.tracks, known, album_tracks=True)
+            if report.id_conflict:
+                st.warning("앨범 검색과 상세 조회가 서로 다른 재생목록 ID를 반환했습니다.")
+                return
+            playlist_id = report.audio_playlist_id
+        if playlist_id:
+            st.caption("공식 API로 수록곡을 조회하려면 이 PC에서 video/run.bat을 실행한 뒤 아래 버튼을 여세요.")
+            st.link_button("영상 앱에서 이 앨범 열기", f"http://127.0.0.1:8502/?album={playlist_id}")
+        else:
+            st.info("선택한 발매본에서 공식 API 조회에 사용할 앨범 재생목록 ID를 받지 못했습니다.")
 
 
 def show_candidates(artist: str, title: str, result: SearchResult) -> None:
@@ -165,7 +178,6 @@ def show_candidates(artist: str, title: str, result: SearchResult) -> None:
         show_songs(result.candidates, known)
     else:
         st.info("이번 공개 검색에서 음원 후보를 찾지 못했습니다. 가수·곡명의 다른 표기나 앨범명으로 찾아보세요.")
-    album_search(artist, known)
 
 
 def main() -> None:
@@ -192,13 +204,14 @@ def main() -> None:
             st.session_state.public_song_results = (artist.strip(), title.strip(), str(exc))
         else:
             st.session_state.public_song_results = (artist.strip(), title.strip(), result)
-    if saved := st.session_state.get("public_song_results"):
+    saved = st.session_state.get("public_song_results")
+    if saved:
         artist, title, outcome = saved
         if isinstance(outcome, str):
             st.error(outcome)
-            album_search(artist, reference_query(artist, title))
         else:
             show_candidates(artist, title, outcome)
+    album_search(artist, bool(saved) and reference_query(artist, title))
 
 
 if __name__ == "__main__":

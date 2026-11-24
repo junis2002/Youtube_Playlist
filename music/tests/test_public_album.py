@@ -1,11 +1,12 @@
 """공개 앨범 조회에서 명시적으로 고른 앨범과 재생 가능한 트랙만 전달하는지 검사한다."""
 
 import unittest
+from dataclasses import replace
 from unittest.mock import call, patch
 
 from requests.exceptions import Timeout
 
-from core.public_album import AlbumOption, find_albums, load_album_tracks
+from core.public_album import AlbumOption, find_albums, inspect_album_tracks, load_album_tracks
 from core.public_search import PublicSearchError, export_url
 
 
@@ -75,6 +76,82 @@ class PublicAlbumTests(unittest.TestCase):
             ("원곡 (반주)", ("앨범 가수",), "밤의 기록 (확장판)", "albumtrk002"),
         ])
         self.assertEqual(export_url(candidates[1]), b"https://www.youtube.com/watch?v=albumtrk002\n")
+
+    def test_empty_track_response_reports_zero_rows_without_loading_playlist(self) -> None:
+        self.client.get_album.return_value = {"tracks": [], "audioPlaylistId": "OLAK5uy_detail-01"}
+        result = inspect_album_tracks(self.option)
+        self.assertEqual(result.raw_count, 0)
+        self.assertEqual(result.tracks, [])
+        self.assertEqual(sum(result.excluded.values()), 0)
+        self.assertEqual(result.audio_playlist_id, "OLAK5uy_detail-01")
+        self.assertFalse(result.id_conflict)
+        self.client.get_album.assert_called_once_with(self.option.browse_id)
+        self.client.get_playlist.assert_not_called()
+
+    def test_each_response_row_is_kept_or_counted_once_with_first_applicable_reason(self) -> None:
+        # 여러 값이 누락된 한 행에도 가장 먼저 적용되는 사유 한 건만 기록한다.
+        rows = [
+            None,
+            {"isAvailable": False, "videoType": "MUSIC_VIDEO_TYPE_OMV"},
+            {"videoType": "MUSIC_VIDEO_TYPE_OMV", "resultType": "video"},
+            {"resultType": "episode"},
+            {"title": "  "},
+            {"title": "ID 없음", "browseId": "albumtrk006"},
+            {"title": "ID 오류", "videoId": "albumtrk006&list=extra"},
+            {"title": "원곡", "videoId": "albumtrk001"},
+            {"title": "원곡 (반주)", "videoId": "albumtrk002"},
+        ]
+        self.client.get_album.return_value = {"tracks": rows}
+        result = inspect_album_tracks(self.option)
+        self.assertEqual(result.raw_count, len(rows))
+        self.assertEqual([track.video_id for track in result.tracks], ["albumtrk001", "albumtrk002"])
+        self.assertEqual(result.excluded, {
+            "행 형식 오류": 1, "재생 불가": 1, "음원 영상 유형 아님": 1,
+            "곡 결과 유형 아님": 1, "곡명 누락": 1, "영상 ID 누락 또는 오류": 2,
+        })
+        self.assertEqual(len(result.tracks) + sum(result.excluded.values()), result.raw_count)
+        self.client.get_album.assert_called_once_with(self.option.browse_id)
+        self.client.get_playlist.assert_not_called()
+
+    def test_only_strictly_valid_playlist_ids_from_expected_service_fields_are_retained(self) -> None:
+        # 검색 결과의 browseId, URL, album.detail의 일반 playlistId에서 오디오 목록을 추측하지 않는다.
+        valid = "OLAK5uy_test-A_b9"
+        invalid = (None, 123, "OLAK5uy_", "PLordinary", valid.lower(), " " + valid, valid + " ",
+                   valid + "\n", valid + "/extra", "https://music.youtube.com/playlist?list=" + valid)
+        for raw in (valid, *invalid):
+            with self.subTest(raw=raw):
+                source = {"resultType": "album", "title": self.option.title, "browseId": self.option.browse_id,
+                          "playlistId": raw}
+                self.client.search.return_value = [source]
+                selected, = find_albums("가수", "밤의 기록")
+                self.assertEqual(selected.audio_playlist_id, valid if raw == valid else None)
+                self.client.get_album.return_value = {"tracks": [], "audioPlaylistId": raw, "playlistId": valid}
+                result = inspect_album_tracks(self.option)
+                self.assertEqual(result.audio_playlist_id, valid if raw == valid else None)
+                self.assertFalse(result.id_conflict)
+        self.client.get_playlist.assert_not_called()
+
+    def test_search_and_detail_ids_must_agree_if_both_valid(self) -> None:
+        first, second = "OLAK5uy_search", "OLAK5uy_detail"
+        for search, detail, expected, conflict in [
+            (first, first, first, False),
+            (first, None, first, False),
+            (first, second + " ", first, False),
+            (None, second, second, False),
+            (first, second, None, True),
+        ]:
+            with self.subTest(search=search, detail=detail):
+                self.client.get_album.reset_mock()
+                option = replace(self.option, audio_playlist_id=search)
+                self.client.get_album.return_value = {
+                    "tracks": [{"title": "원곡", "videoId": "albumtrk001"}], "audioPlaylistId": detail,
+                }
+                result = inspect_album_tracks(option)
+                self.assertEqual(result.audio_playlist_id, expected)
+                self.assertEqual(result.id_conflict, conflict)
+                self.assertEqual([track.video_id for track in result.tracks], ["albumtrk001"])
+                self.client.get_album.assert_called_once_with(option.browse_id)
+        self.client.get_playlist.assert_not_called()
 
     def test_empty_and_invalid_queries(self) -> None:
         for artist, title in [("", "앨범"), ("가수", " ")]:

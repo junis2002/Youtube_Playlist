@@ -6,6 +6,7 @@ Windows 11에서 사용할 수 있는 두 개의 로컬 웹 앱입니다. 가수
 | --- | --- | --- |
 | 음원 찾기 및 YouTube Music 재생목록 등록 | `music/run.bat` | 해당 PC에서 YouTube Music 브라우저 인증 |
 | 공개 음원 후보 검색 및 영상 앱으로 보낼 URL TXT 저장 | `music/run.bat` → 사이드바 **음원 검색** | 공개 검색은 로그인 없이 사용 |
+| 선택한 앨범의 수록곡을 공식 API에서 조회해 URL TXT 저장 | 두 앱 실행 → 음원 검색의 **앨범에서 트랙 찾기** → **영상 앱에서 이 앨범 열기** | 발매본의 음원 재생목록 ID와 영상 앱의 기존 Google 연결 |
 | 일반 영상 찾기 및 최대 50개씩 빠른 링크 생성 | `video/run.bat` | 앱 인증 없이 사용 |
 | 일반 영상을 내 YouTube 계정에 등록 | `video/run.bat` | YouTube Data API v3와 데스크톱 OAuth 설정 |
 

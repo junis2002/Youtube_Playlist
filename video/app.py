@@ -17,7 +17,7 @@ from filelock import Timeout
 from core.auth import AuthError, get_service, save_client_secrets
 from core.checkpoint import Store
 from core.parser import build_inputs, read_file, video_id
-from core.playlist import PlaylistError, Playlists, quick_links, quota_day
+from core.playlist import ALBUM_PLAYLIST_ID, PlaylistError, Playlists, quick_links, quota_day
 from core.register import publish
 from core.searcher import Filters, search
 
@@ -264,13 +264,61 @@ def api_panel(store: Store, job: int, rows: list[dict[str, Any]], service: Any) 
         st.rerun()
 
 
+def album_reader(store: Store, initial_id: str) -> None:
+    st.subheader("앨범 수록곡 조회")
+    playlist_id = st.text_input("앨범 재생목록 ID", value=initial_id, help="음원 앱에서 선택한 발매본의 OLAK5uy_… ID")
+    valid = ALBUM_PLAYLIST_ID.fullmatch(playlist_id)
+    if playlist_id and not valid:
+        st.info("음원 앱에서 앨범을 선택한 뒤 ‘영상 앱에서 이 앨범 열기’를 사용하세요.")
+    if st.button("기존 Google 연결로 수록곡 조회", disabled=not valid, type="primary"):
+        st.session_state.pop("album_read_result", None)
+        st.session_state.pop("album_export_choice", None)
+        try:
+            service = get_service(ROOT)
+            if service is None:
+                st.info("이 PC에 저장된 Google 연결이 없습니다.")
+                return
+            with st.spinner("YouTube Data API에서 앨범 수록곡을 읽는 중…"):
+                api = Playlists(service, lambda n: store.charge(quota_day(), n))
+                result = api.album_tracks(playlist_id)
+            st.session_state.album_read_result = (playlist_id, result)
+        except (AuthError, PlaylistError) as error:
+            st.error(str(error))
+    saved = st.session_state.get("album_read_result")
+    if not saved or saved[0] != playlist_id:
+        return
+    result = saved[1]
+    st.caption(f"공식 API 응답 {result.raw_count}개 · TXT로 내보낼 수 있는 항목 {len(result.entries)}개")
+    if not result.entries:
+        return
+    st.dataframe([
+        {"수록 순서": track.position + 1 if track.position is not None else None,
+         "제목": track.title, "영상 소유 채널": track.channel, "영상 ID": track.video_id}
+        for track in result.entries
+    ], hide_index=True)
+    selected = st.selectbox(
+        "TXT로 내보낼 수록곡", range(len(result.entries)), index=None, key="album_export_choice",
+        format_func=lambda i: f"{result.entries[i].title} · {result.entries[i].channel} · {result.entries[i].video_id}",
+    )
+    if selected is not None:
+        track = result.entries[selected]
+        st.download_button("선택한 수록곡 URL TXT 다운로드",
+                           f"https://www.youtube.com/watch?v={track.video_id}\n".encode("utf-8"),
+                           file_name="앨범-수록곡.txt", mime="text/plain")
+
+
 def main() -> None:
     st.set_page_config(page_title="유튜브 영상 재생목록", layout="wide")
     st.title("유튜브 영상 재생목록")
     store = Store(ROOT / "data" / "checkpoint.sqlite3")
     if message := st.session_state.pop("video_notice", ""):
         st.warning(message)
-    mode = st.radio("등록 방식", ["빠른 링크 (무인증)", "내 계정에 등록 (공식 API)"], horizontal=True)
+    initial_id = st.query_params.get("album", "")
+    modes = ["빠른 링크 (무인증)", "내 계정에 등록 (공식 API)", "앨범 수록곡 조회 (공식 API)"]
+    mode = st.radio("작업 방식", modes, index=2 if initial_id else 0, horizontal=True)
+    if mode == modes[2]:
+        album_reader(store, initial_id if ALBUM_PLAYLIST_ID.fullmatch(initial_id) else "")
+        return
     service = None
     if mode.startswith("내 계정"):
         with st.expander("Google 계정 인증", expanded=not (ROOT / "token.json").exists()):
