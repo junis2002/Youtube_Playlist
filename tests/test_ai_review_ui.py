@@ -212,6 +212,20 @@ class CandidateReviewScreenTests(unittest.TestCase):
             self.assertIn("설치된 로컬 채팅 모델이 없습니다", self.messages())
             self.assertIsNone(self.page.selectbox(key="actual_choice").value)
 
+    def test_changing_the_selected_ollama_model_clears_its_export(self):
+        from music.core.ai_review import Recommendation
+
+        next(w for w in self.page.radio if w.label == "추천을 받을 곳").set_value("로컬 Ollama").run()
+        with patch("music.core.local_model.list_models", return_value=["fixture-a", "fixture-b"]):
+            next(b for b in self.page.button if b.label == "설치된 모델 확인").click().run()
+        with patch("music.core.local_model.recommend", return_value=Recommendation("studio00001", "앨범이 일치합니다.")):
+            next(b for b in self.page.button if b.label == "이 모델로 추천 받기").click().run()
+        _, record = self.downloads()["모델 응답 JSONL 다운로드"]
+        self.assertEqual((record["provider"], record["model"], record["ai"]), ("ollama", "fixture-a", "studio00001"))
+        next(w for w in self.page.selectbox if w.label == "설치된 로컬 모델").set_value("fixture-b").run()
+        self.assertFalse(self.downloads())
+        self.assertIsNone(self.page.selectbox(key="actual_choice").value)
+
     def test_opening_the_model_prompt_closes_independent_human_labeling(self):
         self.assertFalse(self.page.code)
         self.assertTrue(any(w.label == "평가용 내 판정" for w in self.page.selectbox))
