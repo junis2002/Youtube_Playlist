@@ -15,10 +15,12 @@ import streamlit as st
 from ytmusicapi import YTMusic
 
 if __package__:
+    from .ai_review_ui import show_track_review
     from .core import auth, matcher, parser, playlist
     from .core.checkpoint import Checkpoint
     from .core.public_search import valid_video_id
 else:
+    from ai_review_ui import show_track_review
     from core import auth, matcher, parser, playlist
     from core.checkpoint import Checkpoint
     from core.public_search import valid_video_id
@@ -26,7 +28,7 @@ else:
 ROOT = Path(__file__).resolve().parent
 AUTH_FILE = ROOT / "browser.json"
 STATUS = {"Pending": "미검색", "High": "자동 확정", "Low": "확인 필요", "Not Found": "검색 실패", "Manual": "수동 확정"}
-DELIVERY = {"pending": "미등록", "added": "등록 성공", "existing": "이미 포함"}
+DELIVERY = {"pending": "미등록", "added": "등록 성공", "existing": "이미 포함", "skipped": "건너뜀"}
 
 
 def flash(message: str) -> None:
@@ -148,14 +150,15 @@ def eta(start: float, done: int, total: int) -> str:
 
 def search_ui(store: Checkpoint, job: str, client: YTMusic | None, delay: float) -> None:
     rows = store.tracks(job)
-    pending = sum(r["status"] == "Pending" for r in rows)
-    st.write(f"전체 {len(rows):,}곡 중 검색 완료 {len(rows)-pending:,}곡 · 남은 곡 {pending:,}곡")
+    skipped = sum(r["delivery"] == "skipped" for r in rows)
+    pending = sum(r["status"] == "Pending" and r["delivery"] == "pending" for r in rows)
+    st.write(f"전체 {len(rows):,}곡 · 검색 완료 {len(rows)-pending-skipped:,}곡 · 남은 곡 {pending:,}곡 · 건너뜀 {skipped:,}곡")
     if not st.button("검색 시작 / 이어서 진행하기", disabled=client is None or not pending, type="primary"):
         return
     assert client is not None
     with store.lock(job):
-        rows = store.tracks(job)
-        todo = [r for r in rows if r["status"] == "Pending"]
+        rows = [r for r in store.tracks(job) if r["delivery"] != "skipped"]
+        todo = [r for r in rows if r["status"] == "Pending" and r["delivery"] == "pending"]
         started = time.monotonic()
         bar = st.progress(0.0)
         counts = {s: sum(r["status"] == s for r in rows) for s in ("High", "Low", "Not Found")}
@@ -269,6 +272,9 @@ def review_ui(store: Checkpoint, job: str, rows: list[sqlite3.Row], client: YTMu
     options = {c["videoId"]: c for c in json.loads(row["candidates"])}
     if not options:
         return
+    show_track_review(row["artist"], row["title"], row["album"] or "",
+                      ((vid, item["title"], item["artist"], "") for vid, item in options.items()),
+                      context=f"music_{job}_{seq}")
     selected = st.radio("후보 선택", list(options), key=f"cand{job}{seq}", format_func=lambda v:
                         f"{options[v]['artist']} — {options[v]['title']} ({options[v]['score']:.0f}점)")
     st.link_button("선택한 후보 듣기", "https://music.youtube.com/watch?" + urlencode({"v": selected}))
@@ -298,7 +304,8 @@ def exports(rows: list[sqlite3.Row]) -> None:
     st.dataframe(frame, hide_index=True)
     selection = st.radio("내보낼 항목", ["전체 결과", "검색 실패", "확인 필요 및 검색 실패"], horizontal=True)
     if selection != "전체 결과":
-        frame = frame[frame["매칭"].isin(["검색 실패"] if selection == "검색 실패" else ["검색 실패", "확인 필요"])]
+        statuses = ["검색 실패"] if selection == "검색 실패" else ["검색 실패", "확인 필요"]
+        frame = frame[frame["매칭"].isin(statuses) & (frame["등록 상태"] != "건너뜀")]
     # 스프레드시트가 외부 제목을 수식으로 실행하지 않도록 보호한다.
     safe = frame.map(lambda v: "'" + v if isinstance(v, str) and v.lstrip().startswith(("=", "+", "-", "@")) else v)
     st.download_button("CSV 다운로드", safe.to_csv(index=False).encode("utf-8-sig"), f"{selection}.csv", "text/csv")
@@ -311,17 +318,37 @@ def exports(rows: list[sqlite3.Row]) -> None:
     st.download_button("Markdown 다운로드", "\n".join(lines), f"{selection}.md", "text/markdown")
 
 
+def skip_controls(store: Checkpoint, job: str, rows: list[sqlite3.Row]) -> None:
+    with st.expander("곡 건너뛰기 · 다시 열기"):
+        for state, select_label, action_label in (
+            ("pending", "건너뛸 곡", "이 곡 건너뛰기"), ("skipped", "다시 열 곡", "이 곡 다시 열기"),
+        ):
+            options = {r["seq"]: f"{r['seq']}. {r['artist']} — {r['title']} · {STATUS[r['status']]}"
+                       for r in rows if r["delivery"] == state}
+            if not options:
+                continue
+            seq = st.selectbox(select_label, list(options), index=None, format_func=options.get,
+                               key=f"music_disposition_{state}_{job}", placeholder="곡을 선택하세요")
+            if st.button(action_label, key=f"music_apply_{state}_{job}", disabled=seq is None) and seq is not None:
+                skip = state == "pending"
+                store.set_skipped(job, seq, skipped=skip)
+                flash(f"{seq}번 곡을 건너뛰었습니다." if skip else f"{seq}번 곡을 이전 상태로 다시 열었습니다.")
+
+
 def results_ui(store: Checkpoint, job: str, client: YTMusic | None, delay: float) -> None:
     rows = store.tracks(job)
-    cols = st.columns(5)
+    cols = st.columns(6)
     cols[0].metric("전체 곡", len(rows))
     cols[1].metric("등록 성공", sum(r["delivery"] == "added" for r in rows))
     cols[2].metric("이미 포함", sum(r["delivery"] == "existing" for r in rows))
-    cols[3].metric("확인 필요", sum(r["status"] == "Low" for r in rows))
-    cols[4].metric("검색 실패", sum(r["status"] == "Not Found" for r in rows))
+    cols[3].metric("확인 필요", sum(r["status"] == "Low" and r["delivery"] == "pending" for r in rows))
+    cols[4].metric("검색 실패", sum(r["status"] == "Not Found" and r["delivery"] == "pending" for r in rows))
+    cols[5].metric("건너뜀", sum(r["delivery"] == "skipped" for r in rows))
     dest = store.job(job)["playlist"]
     if dest:
         st.link_button("YouTube Music에서 결과 보기", "https://music.youtube.com/playlist?" + urlencode({"list": dest}))
+    if any(r["delivery"] in ("pending", "skipped") for r in rows):
+        skip_controls(store, job, rows)
     review_ui(store, job, rows, client, delay)
     exports(rows)
 

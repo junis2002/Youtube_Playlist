@@ -8,6 +8,7 @@ import streamlit as st
 from filelock import Timeout
 
 from music import app as music
+from music.ai_review_ui import show_track_review
 from music.core.public_search import valid_video_id
 from music.pages.음원_검색 import album_search, clear_albums
 from video import app as video
@@ -66,7 +67,12 @@ def album_workspace() -> None:
         st.write(f"입력 {seq}번 · {artist} — {title}")
     st.subheader("앨범 수록곡")
 
-    def official_reader(playlist_id: str) -> None:
+    def official_reader(playlist_id: str, release_title: str) -> None:
+        def review(entries: list[AlbumTrack]) -> None:
+            # 입력 행의 앨범명과 카탈로그에서 선택한 실제 발매본 이름을 구분한다.
+            rows = [(row.video_id, row.title, row.channel, release_title) for row in entries]
+            show_track_review(artist, title, album, rows, context=f"album-{job}-{seq}-{playlist_id}")
+
         def choose(track: AlbumTrack) -> None:
             if source:
                 music_store().choose_album_track(job, seq, track.video_id, track.title, track.channel)
@@ -76,10 +82,10 @@ def album_workspace() -> None:
             else:
                 open_video_job(f"album:{playlist_id}", track.title, [(track.video_id, track.title, track.channel)])
 
-        video.album_reader(video_store(), playlist_id, on_choose=choose,
+        video.album_reader(video_store(), playlist_id, on_choose=choose, on_review=review if source else None,
                            choose_label="이 수록곡을 입력 행에 확정" if source else "선택한 수록곡으로 영상 작업 만들기")
 
-    album_search(artist, False, on_album=official_reader, initial_album=album)
+    album_search(artist, False, on_release=official_reader, initial_album=album)
 
 
 def main() -> None:

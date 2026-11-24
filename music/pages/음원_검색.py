@@ -111,9 +111,11 @@ def clear_albums() -> None:
 
 
 def album_search(
-    artist: str, known: bool, *, on_album: Callable[[str], None] | None = None, initial_album: str = ""
+    artist: str, known: bool, *, on_album: Callable[[str], None] | None = None,
+    on_release: Callable[[str, str], None] | None = None, initial_album: str = "",
 ) -> None:
-    with st.expander("앨범에서 트랙 찾기", expanded=on_album is not None):
+    inline = on_album is not None or on_release is not None
+    with st.expander("앨범에서 트랙 찾기", expanded=inline):
         with st.form("public_album_search"):
             cols = st.columns(2)
             artist_query = cols[0].text_input("앨범 가수", artist, key="public_album_artist")
@@ -174,12 +176,15 @@ def album_search(
         if not playlist_id:
             st.info("선택한 발매본에서 공식 API 조회에 사용할 앨범 재생목록 ID를 받지 못했습니다.")
             return
-        if on_album is None:
+        if not inline:
             st.caption("공식 API로 수록곡을 조회하려면 이 PC에서 video/run.bat을 실행한 뒤 아래 버튼을 여세요.")
             st.link_button("영상 앱에서 이 앨범 열기", f"http://127.0.0.1:8502/?album={playlist_id}")
             return
     # 통합 화면의 조회·선택 컨트롤은 앨범 검색 입력 영역 아래에 표시한다.
-    on_album(playlist_id)
+    if on_release is not None:
+        on_release(playlist_id, album.title)
+    elif on_album is not None:
+        on_album(playlist_id)
 
 
 def show_candidates(artist: str, title: str, result: SearchResult) -> None:

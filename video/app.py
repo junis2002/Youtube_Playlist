@@ -339,7 +339,8 @@ def api_panel(store: Store, job: int, rows: list[dict[str, Any]], service: Any) 
 
 
 def album_reader(store: Store, initial_id: str, *, on_choose: Callable[[AlbumTrack], None] | None = None,
-                 choose_label: str = "선택한 수록곡으로 영상 작업 만들기") -> None:
+                 choose_label: str = "선택한 수록곡으로 영상 작업 만들기",
+                 on_review: Callable[[list[AlbumTrack]], None] | None = None) -> None:
     st.subheader("앨범 수록곡 조회")
     if on_choose is not None:
         playlist_id = initial_id
@@ -375,6 +376,8 @@ def album_reader(store: Store, initial_id: str, *, on_choose: Callable[[AlbumTra
          "제목": track.title, "영상 소유 채널": track.channel, "영상 ID": track.video_id}
         for track in result.entries
     ], hide_index=True)
+    if on_review is not None:
+        on_review(result.entries)
     selected = st.selectbox(
         "작업에 사용할 수록곡" if on_choose else "TXT로 내보낼 수록곡",
         range(len(result.entries)), index=None, key="album_export_choice",

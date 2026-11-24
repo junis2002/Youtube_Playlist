@@ -19,6 +19,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 local-reports/
+ai-review-*.jsonl
 # ZIP 배치본 및 로컬 전송·백업 파일
 *.zip
 *.bundle

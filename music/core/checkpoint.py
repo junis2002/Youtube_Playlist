@@ -94,11 +94,20 @@ class Checkpoint:
             db.execute("UPDATE tracks SET status='Manual', video=?, candidates=? WHERE job=? AND seq=?",
                        (video_id, json.dumps([chosen, *other_candidates], ensure_ascii=False), job, seq))
 
+    def set_skipped(self, job: str, seq: int, *, skipped: bool) -> None:
+        # 검색·선택 데이터는 원래대로 두고, 등록 대기와 건너뜀 사이에서만 전환한다.
+        previous, new = ("pending", "skipped") if skipped else ("skipped", "pending")
+        with self.lock(job), self.db() as db:
+            cursor = db.execute("UPDATE tracks SET delivery=? WHERE job=? AND seq=? AND delivery=?",
+                                (new, job, seq, previous))
+            if cursor.rowcount != 1:
+                raise ValueError("곡의 상태가 변경되었습니다. 새로고침한 후 곡을 다시 선택하세요.")
+
     def destination(self, job: str, playlist: str | None, creating: bool = False) -> None:
         with self.db() as db:
             db.execute("UPDATE jobs SET playlist=?, creating=? WHERE id=?", (playlist, int(creating), job))
 
     def delivered(self, job: str, results: list[tuple[str, int]]) -> None:
         with self.db() as db:
-            db.executemany("UPDATE tracks SET delivery=? WHERE job=? AND seq=?",
+            db.executemany("UPDATE tracks SET delivery=? WHERE job=? AND seq=? AND delivery='pending'",
                            ((state, job, seq) for state, seq in results))
