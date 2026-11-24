@@ -2,7 +2,7 @@
 
 import streamlit as st
 
-from core.public_search import PublicSearchError, SongCandidate, export_url, search_songs
+from core.public_search import PublicSearchError, SearchResult, export_url, search_songs
 
 REFERENCE_ID = "j1uXcHwLhHM"
 
@@ -16,11 +16,15 @@ def reference_query(artist: str, title: str) -> bool:
     }
 
 
-def show_candidates(artist: str, title: str, candidates: list[SongCandidate]) -> None:
+def show_candidates(artist: str, title: str, result: SearchResult) -> None:
     st.subheader(f"{artist} · {title}")
+    st.caption(" → ".join(result.attempts))
+    if len(result.attempts) > 1:
+        st.caption("입력한 검색어는 그대로 사용했습니다. 한국어·영어는 검색 응답의 언어입니다.")
+    candidates = result.candidates
     known = reference_query(artist, title)
     if not candidates:
-        st.info("검색된 음원이 없습니다. 가수 또는 곡명의 표기를 바꿔 보세요.")
+        st.info("이번 공개 검색에서 음원 후보를 찾지 못했습니다. 가수 또는 곡명의 다른 표기로 다시 검색해 보세요.")
         return
 
     rows = []
@@ -74,11 +78,11 @@ def main() -> None:
         st.session_state.pop("public_song_choice", None)
         try:
             with st.spinner("YouTube Music에서 검색 중…"):
-                candidates = search_songs(artist, title)
+                result = search_songs(artist, title)
         except (PublicSearchError, ValueError) as exc:
             st.error(str(exc))
         else:
-            st.session_state.public_song_results = (artist.strip(), title.strip(), candidates)
+            st.session_state.public_song_results = (artist.strip(), title.strip(), result)
     if result := st.session_state.get("public_song_results"):
         show_candidates(*result)
 
