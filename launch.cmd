@@ -4,6 +4,7 @@ if not exist "app.py" goto :wrong_folder
 if not exist "requirements.txt" goto :wrong_folder
 if "%~1"=="8501" goto :setup
 if "%~1"=="8502" goto :setup
+if "%~1"=="8503" goto :setup
 goto :wrong_folder
 
 :setup
@@ -30,7 +31,7 @@ if errorlevel 1 goto :install_error
 exit /b %errorlevel%
 
 :wrong_folder
-echo Start the application using music\run.bat or video\run.bat.
+echo Start the application using run.bat, music\run.bat or video\run.bat.
 exit /b 1
 
 :no_python

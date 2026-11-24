@@ -24,6 +24,13 @@ QUOTA_MESSAGE = (
 
 
 @dataclass(frozen=True)
+class PlaylistInfo:
+    id: str
+    title: str
+    privacy: str
+
+
+@dataclass(frozen=True)
 class AlbumTrack:
     video_id: str
     title: str
@@ -67,7 +74,7 @@ def quick_links(video_ids: Iterable[str]) -> list[str]:
     ]
 
 
-def _api_error(error: HttpError, *, album_read: bool = False) -> PlaylistError:
+def _api_error(error: HttpError, *, read_subject: str = "") -> PlaylistError:
     try:
         reasons = {
             e.get("reason") for e in json.loads(error.content)["error"].get("errors", [])
@@ -79,18 +86,18 @@ def _api_error(error: HttpError, *, album_read: bool = False) -> PlaylistError:
         return QuotaExceeded(QUOTA_MESSAGE)
     if error.resp.status == 429 or reasons & {"rateLimitExceeded", "userRateLimitExceeded"}:
         return Rejected("요청이 많습니다. 잠시 기다린 뒤 같은 작업을 이어서 진행하세요.")
-    if not album_read and reasons & {"youtubeSignupRequired", "channelNotFound"}:
+    if not read_subject and reasons & {"youtubeSignupRequired", "channelNotFound"}:
         return Rejected("YouTube에서 본인 계정의 채널을 만든 뒤 다시 로그인하세요.")
     if reasons & {"accessNotConfigured", "serviceDisabled"}:
         return Rejected("OAuth 클라이언트의 Google Cloud 프로젝트에서 YouTube Data API v3를 활성화하세요.")
-    if album_read:
+    if read_subject:
         if error.resp.status == 401:
-            return Rejected("계정 인증을 확인할 수 없습니다. 다시 로그인하고 앨범을 조회하세요.")
+            return Rejected("계정 인증을 확인할 수 없습니다. 다시 로그인한 뒤 조회하세요.")
         if error.resp.status == 403:
-            return Rejected("YouTube가 이 계정의 앨범 목록 조회를 허용하지 않았습니다. 계정 및 목록 접근 권한을 확인하세요.")
+            return Rejected(f"YouTube가 {read_subject} 조회를 허용하지 않았습니다. 계정과 접근 권한을 확인하세요.")
         if error.resp.status == 404:
-            return Rejected("공식 API에서 앨범 목록을 찾지 못했습니다. 앨범 목록 ID와 공개 여부를 확인하세요.")
-        return PlaylistError(f"앨범 목록 조회를 완료하지 못했습니다(HTTP {error.resp.status}). 잠시 후 다시 조회하세요.")
+            return Rejected(f"공식 API에서 {read_subject} 정보를 찾지 못했습니다. 계정과 접근 권한을 확인하세요.")
+        return PlaylistError(f"{read_subject} 조회를 완료하지 못했습니다(HTTP {error.resp.status}). 잠시 후 다시 조회하세요.")
     if reasons & {"videoNotFound", "videoUnavailable", "invalidVideoId", "videoAlreadyInAnotherSeriesPlaylist"}:
         return VideoUnavailable("이 영상을 추가할 수 없습니다. 검색 후보에서 다른 영상을 선택하세요.")
     if error.resp.status in {401, 403}:
@@ -138,22 +145,22 @@ class Playlists:
         self.service = service
         self.charge = charge
 
-    def _call(self, request: HttpRequest, units: int, *, album_read: bool = False) -> dict[str, Any]:
+    def _call(self, request: HttpRequest, units: int, *, read_subject: str = "") -> dict[str, Any]:
         # 실제 할당량은 서버가 결정한다. 전송 직전 요청을 집계해 중단 시에도 추정치를 유지한다.
         self.charge(units)
         try:
             return request.execute(num_retries=0)
         except HttpError as error:
-            raise _api_error(error, album_read=album_read) from None
+            raise _api_error(error, read_subject=read_subject) from None
         except Exception:
-            if album_read:
-                raise PlaylistError("앨범 목록 응답을 받지 못했습니다. 연결을 확인하고 다시 조회하세요.") from None
+            if read_subject:
+                raise PlaylistError(f"{read_subject} 응답을 받지 못했습니다. 연결을 확인하고 다시 조회하세요.") from None
             raise PlaylistError("YouTube의 응답을 확인하지 못했습니다. 인터넷 연결과 대상 재생목록을 확인한 뒤 이어서 진행하세요.") from None
 
-    def _items(self, resource: Resource, *, album_read: bool = False, **params: Any) -> Iterator[dict[str, Any]]:
+    def _items(self, resource: Resource, *, read_subject: str = "", **params: Any) -> Iterator[dict[str, Any]]:
         seen_tokens: set[str] = set()
         while True:
-            page = self._call(resource.list(**params, maxResults=50), 1, album_read=album_read)
+            page = self._call(resource.list(**params, maxResults=50), 1, read_subject=read_subject)
             if not isinstance(page, dict) or not isinstance(page.get("items", []), list):
                 raise PlaylistError("목록 응답을 읽을 수 없습니다. 잠시 후 다시 조회하세요.")
             yield from page.get("items", [])
@@ -164,6 +171,39 @@ class Playlists:
                 raise PlaylistError("목록의 다음 페이지를 확인할 수 없습니다. 잠시 후 다시 조회하세요.")
             seen_tokens.add(token)
             params["pageToken"] = token
+
+    def channel_title(self) -> str:
+        """현재 인증으로 확인되는 채널이 하나일 때 그 이름을 반환한다."""
+        page = self._call(self.service.channels().list(
+            part="snippet", mine=True, maxResults=2, fields="nextPageToken,items(snippet/title)",
+        ), 1, read_subject="채널")
+        rows = page.get("items", []) if isinstance(page, dict) else []
+        if not isinstance(rows, list) or len(rows) != 1 or page.get("nextPageToken"):
+            return ""
+        snippet = rows[0].get("snippet") if isinstance(rows[0], dict) else None
+        title = snippet.get("title") if isinstance(snippet, dict) else None
+        return title.strip() if isinstance(title, str) else ""
+
+    def _playlist_infos(self, **params: Any) -> Iterator[PlaylistInfo]:
+        rows = self._items(self.service.playlists(), read_subject="재생목록", part="snippet,status",
+                           fields="nextPageToken,items(id,snippet/title,status/privacyStatus)", **params)
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("id"), str) or not row["id"]:
+                continue
+            snippet, status = row.get("snippet"), row.get("status")
+            title = snippet.get("title") if isinstance(snippet, dict) else None
+            privacy = status.get("privacyStatus") if isinstance(status, dict) else None
+            # API 응답에 없는 제목·공개 범위를 추측하면 다른 목록으로 오인할 수 있다.
+            yield PlaylistInfo(row["id"], title.strip() if isinstance(title, str) else "",
+                               privacy if privacy in ("private", "unlisted", "public") else "")
+
+    def mine_info(self) -> dict[str, PlaylistInfo]:
+        """자신의 목록을 모두 조회하고 선택 ID별 제목과 공개 범위를 제공한다."""
+        return {info.id: info for info in self._playlist_infos(mine=True)}
+
+    def playlist_info(self, playlist_id: str) -> PlaylistInfo | None:
+        """체크포인트에 저장된 대상 목록의 현재 메타데이터를 조회한다."""
+        return next((info for info in self._playlist_infos(id=playlist_id) if info.id == playlist_id), None)
 
     def mine(self) -> dict[str, str]:
         """페이지를 모두 순회하므로 제목이 같은 재생목록도 ID로 구분할 수 있다."""
@@ -181,7 +221,7 @@ class Playlists:
         if not isinstance(playlist_id, str) or not ALBUM_PLAYLIST_ID.fullmatch(playlist_id):
             raise PlaylistError("OLAK5uy_로 시작하는 공식 앨범 목록 ID를 입력하세요.")
         rows = self._items(
-            self.service.playlistItems(), album_read=True, playlistId=playlist_id, part="snippet,contentDetails,status",
+            self.service.playlistItems(), read_subject="앨범 목록", playlistId=playlist_id, part="snippet,contentDetails,status",
             fields=("nextPageToken,items(contentDetails/videoId,status/privacyStatus,"
                     "snippet(title,position,videoOwnerChannelTitle,resourceId(kind,videoId)))"),
         )

@@ -1,11 +1,16 @@
 """공개 YouTube Music 검색 및 영상 앱용 URL 전달 화면."""
 
 from collections import Counter
+from collections.abc import Callable
 
 import streamlit as st
 
-from core.public_album import find_albums, inspect_album_tracks
-from core.public_search import PublicSearchError, SearchResult, SongCandidate, export_url, search_songs
+if __package__:
+    from ..core.public_album import find_albums, inspect_album_tracks, valid_audio_playlist_id
+    from ..core.public_search import PublicSearchError, SearchResult, SongCandidate, export_url, search_songs
+else:
+    from core.public_album import find_albums, inspect_album_tracks, valid_audio_playlist_id
+    from core.public_search import PublicSearchError, SearchResult, SongCandidate, export_url, search_songs
 
 REFERENCE_ID = "j1uXcHwLhHM"
 
@@ -105,12 +110,14 @@ def clear_albums() -> None:
     st.session_state.pop("public_album_choice", None)
 
 
-def album_search(artist: str, known: bool) -> None:
-    with st.expander("앨범에서 트랙 찾기"):
+def album_search(
+    artist: str, known: bool, *, on_album: Callable[[str], None] | None = None, initial_album: str = ""
+) -> None:
+    with st.expander("앨범에서 트랙 찾기", expanded=on_album is not None):
         with st.form("public_album_search"):
             cols = st.columns(2)
             artist_query = cols[0].text_input("앨범 가수", artist, key="public_album_artist")
-            album_query = cols[1].text_input("앨범명", key="public_album_title")
+            album_query = cols[1].text_input("앨범명", initial_album, key="public_album_title")
             submitted = st.form_submit_button("앨범 검색")
         if submitted:
             clear_albums()
@@ -140,31 +147,39 @@ def album_search(artist: str, known: bool) -> None:
             try:
                 with st.spinner("앨범 트랙 조회 중…"):
                     outcome = inspect_album_tracks(album)
-            except (PublicSearchError, ValueError) as exc:
+            except PublicSearchError as exc:
                 outcome = str(exc)
+            except ValueError as exc:
+                st.error(str(exc))
+                return
             st.session_state.public_album_tracks = (album.browse_id, outcome)
         loaded = st.session_state.get("public_album_tracks")
         if not loaded or loaded[0] != album.browse_id:
             return
         report = loaded[1]
+        search_id = valid_audio_playlist_id(album.audio_playlist_id)
         if isinstance(report, str):
             st.error(report)
-            playlist_id = album.audio_playlist_id
+            playlist_id = search_id
         else:
             st.caption(f"공개 앨범 응답의 수록곡 {report.raw_count}개 · TXT로 내보낼 수 있는 트랙 {len(report.tracks)}개")
             if report.excluded:
                 st.caption("제외 사유 · " + " · ".join(f"{reason} {count}개" for reason, count in report.excluded.items()))
             if report.tracks:
                 show_songs(report.tracks, known, album_tracks=True)
-            if report.id_conflict:
+            playlist_id = valid_audio_playlist_id(report.audio_playlist_id)
+            if report.id_conflict or (playlist_id and search_id and playlist_id != search_id):
                 st.warning("앨범 검색과 상세 조회가 서로 다른 재생목록 ID를 반환했습니다.")
                 return
-            playlist_id = report.audio_playlist_id
-        if playlist_id:
+        if not playlist_id:
+            st.info("선택한 발매본에서 공식 API 조회에 사용할 앨범 재생목록 ID를 받지 못했습니다.")
+            return
+        if on_album is None:
             st.caption("공식 API로 수록곡을 조회하려면 이 PC에서 video/run.bat을 실행한 뒤 아래 버튼을 여세요.")
             st.link_button("영상 앱에서 이 앨범 열기", f"http://127.0.0.1:8502/?album={playlist_id}")
-        else:
-            st.info("선택한 발매본에서 공식 API 조회에 사용할 앨범 재생목록 ID를 받지 못했습니다.")
+            return
+    # 통합 화면의 조회·선택 컨트롤은 앨범 검색 입력 영역 아래에 표시한다.
+    on_album(playlist_id)
 
 
 def show_candidates(artist: str, title: str, result: SearchResult) -> None:

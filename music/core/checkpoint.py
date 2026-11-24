@@ -82,6 +82,18 @@ class Checkpoint:
             db.execute("UPDATE tracks SET status='Manual', video=? WHERE job=? AND seq=? AND delivery='pending'",
                        (video, job, seq))
 
+    def choose_album_track(self, job: str, seq: int, video_id: str, title: str, channel: str) -> None:
+        """앨범에서 직접 선택한 후보와 선택 상태를 함께 저장한다."""
+        with self.lock(job), self.db() as db:
+            row = db.execute("SELECT candidates FROM tracks WHERE job=? AND seq=? AND delivery='pending'",
+                             (job, seq)).fetchone()
+            if row is None:
+                raise ValueError("현재 등록 상태를 확인한 뒤 음원 목록에서 입력 행을 다시 선택하세요.")
+            other_candidates = [item for item in json.loads(row["candidates"]) if item["videoId"] != video_id]
+            chosen = {"videoId": video_id, "title": title, "artist": channel, "score": None}
+            db.execute("UPDATE tracks SET status='Manual', video=?, candidates=? WHERE job=? AND seq=?",
+                       (video_id, json.dumps([chosen, *other_candidates], ensure_ascii=False), job, seq))
+
     def destination(self, job: str, playlist: str | None, creating: bool = False) -> None:
         with self.db() as db:
             db.execute("UPDATE jobs SET playlist=?, creating=? WHERE id=?", (playlist, int(creating), job))

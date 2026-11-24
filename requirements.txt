@@ -1,0 +1,2 @@
+-r music/requirements.txt
+-r video/requirements.txt

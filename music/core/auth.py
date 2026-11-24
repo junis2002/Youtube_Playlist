@@ -58,7 +58,7 @@ def clean_headers(raw: str) -> str:
     return "\n".join(f"{key}: {value}" for key, value in values.items())
 
 
-def connect(path: Path) -> YTMusic:
+def connect_account(path: Path) -> tuple[YTMusic, str]:
     """저장 파일을 읽고 로그인 계정 전용 API로 세션을 검증한다."""
     if not path.is_file():
         raise AuthError("browser.json 파일이 없습니다. 아래 안내에 따라 요청 헤더를 입력하세요.")
@@ -73,10 +73,16 @@ def connect(path: Path) -> YTMusic:
         raise
     except Exception:
         raise AuthError("계정 연결에 실패했습니다. 네트워크를 확인하고 로그인한 계정의 새 browse 헤더로 인증하세요.") from None
-    return client
+    handle = info.get("channelHandle")
+    label = f"{info['accountName']} ({handle})" if handle else str(info["accountName"])
+    return client, label
 
 
-def setup_and_connect(path: Path, raw: str) -> YTMusic:
+def connect(path: Path) -> YTMusic:
+    return connect_account(path)[0]
+
+
+def setup_account(path: Path, raw: str) -> tuple[YTMusic, str]:
     """검증에 성공한 파일만 원자적으로 게시하여 기존 인증을 보존한다."""
     headers = clean_headers(raw)
     temporary: Path | None = None
@@ -85,9 +91,9 @@ def setup_and_connect(path: Path, raw: str) -> YTMusic:
         with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".ytmusic-auth-", suffix=".tmp", delete=False) as output:
             temporary = Path(output.name)
         setup(filepath=str(temporary), headers_raw=headers)
-        client = connect(temporary)
+        account = connect_account(temporary)
         os.replace(temporary, path)
-        return client
+        return account
     except AuthError:
         raise
     except OSError:
@@ -97,3 +103,7 @@ def setup_and_connect(path: Path, raw: str) -> YTMusic:
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+
+
+def setup_and_connect(path: Path, raw: str) -> YTMusic:
+    return setup_account(path, raw)[0]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from collections.abc import Iterator
@@ -29,6 +30,10 @@ class Store:
                     registration TEXT NOT NULL DEFAULT 'pending', PRIMARY KEY(job,pos)
                 );
                 CREATE TABLE IF NOT EXISTS usage (day TEXT PRIMARY KEY, units INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS confirmed_imports (
+                    source TEXT NOT NULL, selection TEXT NOT NULL, job INTEGER NOT NULL REFERENCES jobs(id),
+                    PRIMARY KEY(source, selection)
+                );
             """)
 
     @contextmanager
@@ -59,6 +64,35 @@ class Store:
     def jobs(self) -> list[dict[str, Any]]:
         with self.connect() as db:
             return [dict(row) for row in db.execute("SELECT * FROM jobs ORDER BY id DESC")]
+
+    def confirmed_job(self, source: str, label: str, tracks: list[tuple[str, str, str]],
+                      filters: dict[str, Any]) -> int:
+        """선택한 (영상 ID, 제목, 채널)로 작업을 만들고 같은 선택을 다시 열 수 있게 한다."""
+        unique = {}
+        for video_id, title, channel in tracks:
+            unique.setdefault(video_id, (title, channel))
+        if not unique:
+            raise ValueError("영상 작업으로 전달할 확정곡이 없습니다.")
+        selection = hashlib.sha256(json.dumps(list(unique)).encode()).hexdigest()
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            existing = db.execute("SELECT job FROM confirmed_imports WHERE source=? AND selection=?",
+                                  (source, selection)).fetchone()
+            if existing:
+                return existing["job"]
+            job = db.execute("INSERT INTO jobs(label,filters) VALUES(?,?)",
+                             (label, json.dumps(filters, ensure_ascii=False))).lastrowid
+            assert job is not None
+            for pos, (vid, (title, channel)) in enumerate(unique.items(), 1):
+                url = f"https://www.youtube.com/watch?v={vid}"
+                candidate = {"id": vid, "title": title, "channel": channel, "webpage_url": url,
+                             "score": None, "duration": None}
+                db.execute("""INSERT INTO items(job,pos,original,query,status,video,candidates)
+                              VALUES(?,?,?,?, 'Manual', ?,?)""",
+                           (job, pos, title, url, vid, json.dumps([candidate], ensure_ascii=False)))
+            db.execute("INSERT INTO confirmed_imports(source,selection,job) VALUES(?,?,?)",
+                       (source, selection, job))
+            return job
 
     def job(self, job: int) -> dict[str, Any]:
         with self.connect() as db:

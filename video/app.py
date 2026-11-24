@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import Counter
-from dataclasses import asdict
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from time import monotonic
 from typing import Any
@@ -14,12 +15,20 @@ import pandas as pd
 import streamlit as st
 from filelock import Timeout
 
-from core.auth import AuthError, get_service, save_client_secrets
-from core.checkpoint import Store
-from core.parser import build_inputs, read_file, video_id
-from core.playlist import ALBUM_PLAYLIST_ID, PlaylistError, Playlists, quick_links, quota_day
-from core.register import publish
-from core.searcher import Filters, search
+if __package__:
+    from .core.auth import AuthError, get_service, save_client_secrets
+    from .core.checkpoint import Store
+    from .core.parser import build_inputs, read_file, video_id
+    from .core.playlist import ALBUM_PLAYLIST_ID, AlbumTrack, PlaylistError, PlaylistInfo, Playlists, quick_links, quota_day
+    from .core.register import publish
+    from .core.searcher import Filters, search
+else:
+    from core.auth import AuthError, get_service, save_client_secrets
+    from core.checkpoint import Store
+    from core.parser import build_inputs, read_file, video_id
+    from core.playlist import ALBUM_PLAYLIST_ID, AlbumTrack, PlaylistError, PlaylistInfo, Playlists, quick_links, quota_day
+    from core.register import publish
+    from core.searcher import Filters, search
 
 ROOT = Path(__file__).resolve().parent
 READY = {"High", "Manual"}
@@ -179,7 +188,8 @@ def review(store: Store, job: int, rows: list[dict[str, Any]], filters: Filters)
             c = candidates[i]
             secs = c.get("duration")
             duration = f"{int(secs)//60}:{int(secs)%60:02}" if secs is not None else "길이 미상"
-            return f"{c['title']} · {c['channel']} · {duration} · {c['score']}점"
+            score = f"{c['score']}점" if c.get("score") is not None else "수동 선택"
+            return f"{c['title']} · {c['channel']} · {duration} · {score}"
 
         choice = st.radio("후보 영상", range(len(candidates)), format_func=label,
                           key=f"choice-{job}-{pos}-{row['query']}")
@@ -197,11 +207,11 @@ def account() -> Any:
     uploaded = st.file_uploader("데스크톱 OAuth 클라이언트 JSON", type="json", key="oauth-upload")
     if uploaded and st.button("클라이언트 파일 저장"):
         save_client_secrets(ROOT, uploaded.getvalue())
-        st.session_state.pop("my_playlists", None)
+        st.session_state.pop("video_api_preview", None)
         st.success("클라이언트 설정을 저장했습니다.")
     login = st.button("Google 계정 로그인(OAuth)")
     if login:
-        st.session_state.pop("my_playlists", None)
+        st.session_state.pop("video_api_preview", None)
     service = get_service(ROOT, login=login)
     if service is None:
         st.info("client_secrets.json을 앱 폴더에 두거나 업로드한 뒤 로그인하세요. 발급 방법은 README를 참고하세요.")
@@ -210,19 +220,69 @@ def account() -> Any:
     return service
 
 
+@dataclass
+class ApiPreview:
+    token_version: tuple[int, ...] | None
+    channel: str = ""
+    choices: dict[str, PlaylistInfo] | None = None
+    # 중복 조회를 줄이되 토큰 교체와 사용자 새로고침 시 다시 조회한다.
+    details: dict[str, PlaylistInfo | None] = field(default_factory=dict)
+    errors: dict[str, str] = field(default_factory=dict)
+
+
+def preview_cache() -> ApiPreview:
+    try:
+        stat = (ROOT / "token.json").stat()
+        version = (stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+    except FileNotFoundError:
+        version = None
+    cache = st.session_state.get("video_api_preview")
+    if cache is None or cache.token_version != version:
+        cache = ApiPreview(version)
+        st.session_state["video_api_preview"] = cache
+    return cache
+
+
+def destination_preview(api: Playlists, cache: ApiPreview, playlist_id: str) -> tuple[str, str]:
+    if playlist_id not in cache.details:
+        try:
+            cache.details[playlist_id] = api.playlist_info(playlist_id)
+        except PlaylistError as error:
+            cache.details[playlist_id] = None
+            cache.errors[playlist_id] = str(error)
+    if message := cache.errors.get(playlist_id):
+        st.warning(message)
+    info = cache.details[playlist_id]
+    return ((info.title if info and info.title else "제목 확인 불가") + f" ({playlist_id})",
+            info.privacy if info and info.privacy else "확인 불가")
+
+
 def api_panel(store: Store, job: int, rows: list[dict[str, Any]], service: Any) -> None:
     today = quota_day()
-    units = store.usage(today)
     remaining = sum(1 for r in rows if r["status"] in READY and r["registration"] not in DONE)
     state = store.job(job)
     meter = st.empty()
-    meter.caption(f"태평양 날짜 {today} · 이 PC 예상 사용 {units:,}유닛 · 기본 10,000 기준 잔여 약 {max(0,10000-units):,}유닛")
+    def update_meter() -> None:
+        units = store.usage(today)
+        meter.caption(f"태평양 날짜 {today} · 이 PC 예상 사용 {units:,}유닛 · 기본 10,000 기준 잔여 약 {max(0,10000-units):,}유닛")
     st.caption(f"등록 대기 {remaining:,}개 · 모두 새 영상이면 최대 {50 * remaining:,}유닛 + 조회 페이지당 1유닛 · 새 목록 생성 50유닛")
     if not service:
+        update_meter()
         return
     api = Playlists(service, lambda n: store.charge(quota_day(), n))
+    cache = preview_cache()
+    if st.button("등록 정보 새로고침"):
+        cache.channel = ""
+        cache.details.clear()
+        cache.errors.clear()
+    if not cache.channel:
+        try:
+            cache.channel = api.channel_title() or "채널 이름 확인 불가"
+        except PlaylistError as error:
+            cache.channel = f"확인 불가 ({error})"
     target: str | None = None
     title, description, privacy = "", "", "private"
+    mode = ""
     if state["playlist"]:
         st.link_button("대상 재생목록 열기", f"https://www.youtube.com/playlist?list={state['playlist']}")
     else:
@@ -243,14 +303,28 @@ def api_panel(store: Store, job: int, rows: list[dict[str, Any]], service: Any) 
             privacy = st.selectbox("공개 설정", ["private", "unlisted", "public"], key=f"privacy-{job}")
         else:
             if st.button("내 재생목록 불러오기"):
-                st.session_state["my_playlists"] = api.mine()
-            choices = st.session_state.get("my_playlists", {})
-            if choices:
+                cache.choices = api.mine_info()
+                cache.details.update(cache.choices)
+                for playlist_id in cache.choices:
+                    cache.errors.pop(playlist_id, None)
+            if cache.choices:
+                choices = cache.choices
                 target = st.selectbox("내 재생목록", list(choices),
-                                      format_func=lambda v: f"{choices[v]} ({v})")
-            elif choices == {} and "my_playlists" in st.session_state:
+                                      format_func=lambda v: f"{choices[v].title or '제목 확인 불가'} ({v})")
+            elif cache.choices == {}:
                 st.info("계정에서 선택할 재생목록을 찾지 못했습니다.")
-    ready = bool(remaining and (state["playlist"] or target or title.strip()))
+    active_id = state["playlist"] or target
+    if active_id:
+        display_name, display_privacy = destination_preview(api, cache, active_id)
+    elif mode == "새 재생목록":
+        display_name, display_privacy = title.strip() or "목록 제목 입력 대기", privacy
+    else:
+        display_name, display_privacy = "목록 선택 대기", "확인 대기"
+    update_meter()
+    st.subheader("등록 미리보기")
+    st.text(f"로그인 채널  {cache.channel}\n대상 재생목록  {display_name}\n"
+            f"공개 범위  {display_privacy}\n등록 대기  {remaining:,}개")
+    ready = bool(remaining and (active_id or title.strip()))
     if st.button("등록 이어서 진행", type="primary", disabled=not ready):
         bar = st.progress(0.0)
         def progress(done: int, total: int, text: str) -> None:
@@ -264,9 +338,14 @@ def api_panel(store: Store, job: int, rows: list[dict[str, Any]], service: Any) 
         st.rerun()
 
 
-def album_reader(store: Store, initial_id: str) -> None:
+def album_reader(store: Store, initial_id: str, *, on_choose: Callable[[AlbumTrack], None] | None = None,
+                 choose_label: str = "선택한 수록곡으로 영상 작업 만들기") -> None:
     st.subheader("앨범 수록곡 조회")
-    playlist_id = st.text_input("앨범 재생목록 ID", value=initial_id, help="음원 앱에서 선택한 발매본의 OLAK5uy_… ID")
+    if on_choose is not None:
+        playlist_id = initial_id
+        st.caption(f"선택한 발매본의 앨범 재생목록 ID · {playlist_id}")
+    else:
+        playlist_id = st.text_input("앨범 재생목록 ID", value=initial_id, help="음원 앱에서 선택한 발매본의 OLAK5uy_… ID")
     valid = ALBUM_PLAYLIST_ID.fullmatch(playlist_id)
     if playlist_id and not valid:
         st.info("음원 앱에서 앨범을 선택한 뒤 ‘영상 앱에서 이 앨범 열기’를 사용하세요.")
@@ -297,7 +376,8 @@ def album_reader(store: Store, initial_id: str) -> None:
         for track in result.entries
     ], hide_index=True)
     selected = st.selectbox(
-        "TXT로 내보낼 수록곡", range(len(result.entries)), index=None, key="album_export_choice",
+        "작업에 사용할 수록곡" if on_choose else "TXT로 내보낼 수록곡",
+        range(len(result.entries)), index=None, key="album_export_choice",
         format_func=lambda i: f"{result.entries[i].title} · {result.entries[i].channel} · {result.entries[i].video_id}",
     )
     if selected is not None:
@@ -305,18 +385,22 @@ def album_reader(store: Store, initial_id: str) -> None:
         st.download_button("선택한 수록곡 URL TXT 다운로드",
                            f"https://www.youtube.com/watch?v={track.video_id}\n".encode("utf-8"),
                            file_name="앨범-수록곡.txt", mime="text/plain")
+        if on_choose is not None and st.button(choose_label, key="video_album_choose", type="primary"):
+            on_choose(track)
 
 
-def main() -> None:
-    st.set_page_config(page_title="유튜브 영상 재생목록", layout="wide")
-    st.title("유튜브 영상 재생목록")
+def workspace(*, standalone: bool = False) -> None:
+    """같은 저장소를 사용해 독립 앱과 통합 앱에서 영상 작업을 연다."""
     store = Store(ROOT / "data" / "checkpoint.sqlite3")
     if message := st.session_state.pop("video_notice", ""):
         st.warning(message)
-    initial_id = st.query_params.get("album", "")
-    modes = ["빠른 링크 (무인증)", "내 계정에 등록 (공식 API)", "앨범 수록곡 조회 (공식 API)"]
-    mode = st.radio("작업 방식", modes, index=2 if initial_id else 0, horizontal=True)
-    if mode == modes[2]:
+    initial_id = st.query_params.get("album", "") if standalone else ""
+    modes = ["빠른 링크 (무인증)", "내 계정에 등록 (공식 API)"]
+    album_mode = "앨범 수록곡 조회 (공식 API)"
+    if standalone:
+        modes.append(album_mode)
+    mode = st.radio("작업 방식", modes, index=2 if initial_id else 0, horizontal=True, key="video_mode")
+    if mode == album_mode:
         album_reader(store, initial_id if ALBUM_PLAYLIST_ID.fullmatch(initial_id) else "")
         return
     service = None
@@ -327,7 +411,7 @@ def main() -> None:
             except AuthError as error:
                 st.error(str(error))
     jobs = store.jobs()
-    with st.expander("파일 업로드 · 새 작업", expanded=not jobs):
+    with st.expander("파일 업로드 · 새 작업", expanded=not standalone or not jobs):
         new_input(store)
     if not jobs:
         return
@@ -372,6 +456,12 @@ def main() -> None:
         download_report(table, f"video-{job}-all", "전체 결과")
         failed = table[table["판정"].isin(["검색 실패", "검토 필요"]) | table["등록"].isin(["등록 실패", "전송 확인 필요"])]
         download_report(failed, f"video-{job}-review", "실패·검토 목록")
+
+
+def main() -> None:
+    st.set_page_config(page_title="유튜브 영상 재생목록", layout="wide")
+    st.title("유튜브 영상 재생목록")
+    workspace(standalone=True)
 
 
 if __name__ == "__main__":

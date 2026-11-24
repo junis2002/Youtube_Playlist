@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -13,8 +14,14 @@ import pandas as pd
 import streamlit as st
 from ytmusicapi import YTMusic
 
-from core import auth, matcher, parser, playlist
-from core.checkpoint import Checkpoint
+if __package__:
+    from .core import auth, matcher, parser, playlist
+    from .core.checkpoint import Checkpoint
+    from .core.public_search import valid_video_id
+else:
+    from core import auth, matcher, parser, playlist
+    from core.checkpoint import Checkpoint
+    from core.public_search import valid_video_id
 
 ROOT = Path(__file__).resolve().parent
 AUTH_FILE = ROOT / "browser.json"
@@ -27,29 +34,38 @@ def flash(message: str) -> None:
     st.rerun()
 
 
-def auth_ui() -> YTMusic | None:
+def auth_ui(*, auto_connect_saved: bool) -> YTMusic | None:
     stamp = AUTH_FILE.stat().st_mtime_ns if AUTH_FILE.is_file() else None
-    # 세션 시작 또는 파일 교체 시에만 계정 API를 호출한다.
-    if "music_auth_stamp" not in st.session_state or stamp != st.session_state.music_auth_stamp:
+    changed = "music_auth_stamp" not in st.session_state or stamp != st.session_state.music_auth_stamp
+    if changed:
         st.session_state.music_client = None
         st.session_state.music_auth_stamp = stamp
         st.session_state.music_auth_error = ""
+        st.session_state.music_channel = ""
         st.session_state.pop("music_lists", None)
-        if stamp is not None:
-            try:
-                st.session_state.music_client = auth.connect(AUTH_FILE)
-            except auth.AuthError as exc:
-                st.session_state.music_auth_error = str(exc)
+        st.session_state.pop("music_targets", None)
+    # 통합 화면의 파일 가져오기와 공식 API 앨범 조회는 브라우저 인증이 필요 없다.
+    retry = stamp is not None and st.button("저장된 인증 다시 확인")
+    if retry or (changed and auto_connect_saved and stamp is not None):
+        try:
+            client, channel = auth.connect_account(AUTH_FILE)
+        except auth.AuthError as exc:
+            st.session_state.music_client = None
+            st.session_state.music_channel = ""
+            st.session_state.music_auth_error = str(exc)
+        else:
+            st.session_state.music_client = client
+            st.session_state.music_channel = channel
+            st.session_state.music_auth_error = ""
+        st.session_state.pop("music_lists", None)
+        st.session_state.pop("music_targets", None)
 
     if st.session_state.get("music_client") is not None:
-        st.success("YouTube Music 계정에 연결했습니다.")
+        st.success(f"YouTube Music 연결 채널 · {st.session_state.get('music_channel') or '이름 미확인'}")
     elif st.session_state.get("music_auth_error"):
         st.warning(st.session_state.music_auth_error)
     else:
-        st.info("음원 검색과 재생목록 등록에 사용할 계정을 연결해 주세요.")
-    if AUTH_FILE.exists() and st.button("저장된 인증 다시 확인"):
-        del st.session_state.music_auth_stamp
-        st.rerun()
+        st.info("기존 음원 계정으로 검색하거나 등록하려면 YouTube Music에 연결하세요.")
     with st.expander("브라우저 요청 헤더로 계정 연결", expanded=st.session_state.get("music_client") is None):
         st.markdown(
             "1. 이 PC의 Chrome 또는 Edge에서 [YouTube Music](https://music.youtube.com)에 로그인하세요.\n"
@@ -63,11 +79,13 @@ def auth_ui() -> YTMusic | None:
             raw = st.text_area("Raw Request Headers", height=125, placeholder="이 PC에서 복사한 요청 헤더")
             if st.form_submit_button("인증 파일 생성 및 연결 테스트"):
                 try:
-                    client = auth.setup_and_connect(AUTH_FILE, raw)
+                    client, channel = auth.setup_account(AUTH_FILE, raw)
                 except auth.AuthError as exc:
                     st.error(str(exc))
                 else:
                     st.session_state.music_client = client
+                    st.session_state.music_channel = channel
+                    st.session_state.pop("music_targets", None)
                     st.session_state.music_auth_stamp = AUTH_FILE.stat().st_mtime_ns
                     st.session_state.music_auth_error = ""
                     st.session_state.pop("music_lists", None)
@@ -161,12 +179,36 @@ def registration(store: Checkpoint, job: str, client: YTMusic, delay: float, onl
     playlist.register(client, store, job, report, only_seq, delay)
 
 
+def target_details(client: YTMusic | None, dest: str) -> tuple[str, str]:
+    """같은 채널·목록에 대한 등록 미리보기는 세션 안에서 재사용한다."""
+    cache = st.session_state.setdefault("music_targets", {})
+    if dest not in cache and client is not None:
+        title = st.session_state.get("music_lists", {}).get(dest, "")
+        privacy = ""
+        try:
+            details = client.get_playlist(dest, limit=1)
+            title = details.get("title") or title
+            privacy = details.get("privacy") or ""
+        except Exception:
+            pass  # 오래된 작업에는 목록 ID만 있어도 이어서 등록할 수 있다.
+        cache[dest] = (title, privacy)
+    title, privacy = cache.get(dest, ("", ""))
+    name = f"{title} ({dest})" if title else dest
+    return f"연결된 목록 · {name}", privacy or "미확인"
+
+
+def write_preview(target: str, privacy: str, ready: int) -> None:
+    channel = st.session_state.get("music_channel") or "미확인"
+    st.text(f"연결 채널 · {channel}\n대상 · {target}\n공개 범위 · {privacy}\n등록 예정 · {ready:,}곡")
+
+
 def playlist_ui(store: Checkpoint, job: str, client: YTMusic | None, delay: float) -> None:
     current = store.job(job)
     dest = current["playlist"]
+    ready = sum(bool(r["video"]) and r["delivery"] == "pending" for r in store.tracks(job))
     if dest:
         st.link_button("연결한 재생목록 열기", "https://music.youtube.com/playlist?" + urlencode({"list": dest}))
-        ready = sum(bool(r["video"]) and r["delivery"] == "pending" for r in store.tracks(job))
+        write_preview(*target_details(client, dest), ready)
         if st.button(f"확정한 {ready:,}곡 등록 / 이어서 진행하기", disabled=client is None or ready == 0, type="primary"):
             assert client is not None
             with store.lock(job):
@@ -186,10 +228,13 @@ def playlist_ui(store: Checkpoint, job: str, client: YTMusic | None, delay: floa
         title = st.text_input("재생목록 제목", value=Path(current["label"]).stem, key=f"title{job}")
         description = st.text_area("설명", key=f"desc{job}")
         privacy = st.selectbox("공개 설정", ["PRIVATE", "UNLISTED", "PUBLIC"])
+        write_preview(f"새 목록 · {title}", privacy, ready)
         if st.button("재생목록 생성 및 연결", disabled=client is None or not title.strip()):
             assert client is not None
             with store.lock(job):
                 playlist.create(client, store, job, title, description, privacy)
+                dest = store.job(job)["playlist"]
+                st.session_state.setdefault("music_targets", {})[dest] = (title, privacy)
             flash("새 재생목록을 연결했습니다. 등록할 곡 수를 확인해 주세요.")
     else:
         if st.button("내 재생목록 불러오기", disabled=client is None):
@@ -228,7 +273,10 @@ def review_ui(store: Checkpoint, job: str, rows: list[sqlite3.Row], client: YTMu
                         f"{options[v]['artist']} — {options[v]['title']} ({options[v]['score']:.0f}점)")
     st.link_button("선택한 후보 듣기", "https://music.youtube.com/watch?" + urlencode({"v": selected}))
     choose = st.button("이 후보 확정")
-    add = st.button("확정 후 재생목록에 바로 추가", disabled=client is None or not store.job(job)["playlist"])
+    dest = store.job(job)["playlist"]
+    if dest:
+        write_preview(*target_details(client, dest), 1)
+    add = st.button("확정 후 재생목록에 바로 추가", disabled=client is None or not dest)
     if choose or add:
         with store.lock(job):
             store.choose(job, seq, selected)
@@ -245,7 +293,7 @@ def exports(rows: list[sqlite3.Row]) -> None:
         candidates = json.loads(r["candidates"])
         chosen = next((c for c in candidates if c["videoId"] == r["video"]), candidates[0] if candidates else {})
         data.append((r["seq"], r["artist"], r["title"], r["album"], STATUS[r["status"]], DELIVERY[r["delivery"]],
-                     r["video"] or "", chosen.get("title", ""), chosen.get("score", ""), r["query"]))
+                     r["video"] or "", chosen.get("title", ""), chosen.get("score"), r["query"]))
     frame = pd.DataFrame(data, columns=labels)
     st.dataframe(frame, hide_index=True)
     selection = st.radio("내보낼 항목", ["전체 결과", "검색 실패", "확인 필요 및 검색 실패"], horizontal=True)
@@ -255,6 +303,8 @@ def exports(rows: list[sqlite3.Row]) -> None:
     safe = frame.map(lambda v: "'" + v if isinstance(v, str) and v.lstrip().startswith(("=", "+", "-", "@")) else v)
     st.download_button("CSV 다운로드", safe.to_csv(index=False).encode("utf-8-sig"), f"{selection}.csv", "text/csv")
     def cell(value: Any) -> str:
+        if pd.isna(value):
+            return ""
         return str(value).replace("\\", "\\\\").replace("|", r"\|").replace("\r", " ").replace("\n", " ")
     lines = ["| " + " | ".join(labels) + " |", "| " + " | ".join("---" for _ in labels) + " |"]
     lines.extend("| " + " | ".join(cell(v) for v in row) + " |" for row in frame.itertuples(index=False, name=None))
@@ -276,29 +326,63 @@ def results_ui(store: Checkpoint, job: str, client: YTMusic | None, delay: float
     exports(rows)
 
 
-def main() -> None:
-    st.set_page_config(page_title="음원 재생목록", layout="wide")
-    st.title("YouTube Music 재생목록")
+LookupCallback = Callable[[str, int, str, str, str], None]
+PrepareCallback = Callable[[str], None]
+
+
+def album_actions(store: Checkpoint, job: str, on_lookup: LookupCallback | None,
+                  on_prepare: PrepareCallback | None) -> None:
+    rows = store.tracks(job)
+    pending = {r["seq"]: r for r in rows if r["delivery"] == "pending"}
+    if on_lookup and pending:
+        def label(seq: int) -> str:
+            row = pending[seq]
+            return " · ".join(str(v) for v in (seq, row["artist"], row["title"], row["album"]) if v != "")
+
+        seq = st.selectbox("앨범에서 확인할 곡", list(pending), index=None, format_func=label,
+                           key=f"music_lookup_row_{job}", placeholder="저장된 작업에서 한 곡을 선택하세요")
+        if st.button("앨범에서 이 곡 찾기", disabled=seq is None) and seq is not None:
+            row = pending[seq]
+            on_lookup(job, seq, row["artist"], row["title"], row["album"])
+    if on_prepare:
+        ready = sum(r["status"] in ("High", "Manual") and valid_video_id(r["video"]) is not None
+                    for r in pending.values())
+        st.caption(f"영상 작업으로 보낼 수 있는 확정 곡 {ready:,}개")
+        if st.button("확정한 곡으로 영상 작업 만들기", disabled=not ready):
+            on_prepare(job)
+
+
+def workspace(*, on_lookup: LookupCallback | None = None, on_prepare: PrepareCallback | None = None,
+              auto_connect_saved: bool = False) -> None:
+    """기존 음원 작업 DB와 파일 가져오기를 같은 작업 공간에서 연다."""
     store = Checkpoint(ROOT / ".data" / "music.sqlite3")
     jobs = {j["id"]: j for j in store.jobs()}
     if "music_next_job" in st.session_state:
         st.session_state.music_job = st.session_state.pop("music_next_job")
-    job = st.sidebar.selectbox("저장된 작업", list(jobs), key="music_job", format_func=lambda k:
+    job = st.selectbox("저장된 작업", list(jobs), key="music_job", format_func=lambda k:
                                f"{jobs[k]['label']} · {jobs[k]['created']} · {k[:6]}", placeholder="목록을 업로드하세요")
     delay = st.sidebar.slider("요청 간격 (초)", 0.2, 3.0, 0.35, 0.05)
     if message := st.session_state.pop("music_notice", None):
         st.success(message)
-    account, upload, search, publish, results = st.tabs(["계정 연결", "음원 업로드", "검색", "재생목록 등록", "검토 및 결과"])
-    with account:
-        client = auth_ui()
+    upload, search, publish, results, account = st.tabs(["음원 업로드", "검색", "재생목록 등록", "검토 및 결과", "계정 연결"])
     with upload:
         import_ui(store)
+        if job and (on_lookup or on_prepare):
+            album_actions(store, job, on_lookup, on_prepare)
+    with account:
+        client = auth_ui(auto_connect_saved=auto_connect_saved)
     for tab, action in ((search, search_ui), (publish, playlist_ui), (results, results_ui)):
         with tab:
             if job:
                 action(store, job, client, delay)
             else:
                 st.info("음원 업로드 탭에서 작업을 먼저 만들어 주세요.")
+
+
+def main() -> None:
+    st.set_page_config(page_title="음원 재생목록", layout="wide")
+    st.title("YouTube Music 재생목록")
+    workspace(auto_connect_saved=True)
 
 
 if __name__ == "__main__":
