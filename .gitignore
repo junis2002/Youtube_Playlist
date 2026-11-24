@@ -1,0 +1,33 @@
+# PC별 인증 및 사용자 데이터
+browser.json
+client_secrets*.json
+client_secret*.json
+token*.json
+.env
+.env.*
+*.sqlite*
+*.db
+*.db-*
+.data/
+data/
+.streamlit/secrets.toml
+*.tmp
+# 로컬 Python 환경과 실행 결과
+.venv*/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+local-reports/
+# ZIP 배치본 및 로컬 전송·백업 파일
+*.zip
+*.bundle
+/Temp/
+/temp/
+*transfer*.txt
+# 입력 목록과 브라우저·OAuth 파일의 다운로드 사본
+/LOCAL-*.txt
+/music/LOCAL-*.txt
+/video/LOCAL-*.txt
+browser*.json
+credentials*.json

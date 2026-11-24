@@ -1,0 +1,10 @@
+streamlit>=1.47,<2
+pandas>=2.2,<3
+openpyxl>=3.1.5,<4
+rapidfuzz>=3.9,<4
+yt-dlp>=2025.10.14
+google-api-python-client>=2.155,<3
+google-auth-oauthlib>=1.2,<2
+google-auth-httplib2>=0.2,<1
+tzdata>=2024.2
+filelock>=3.13,<4

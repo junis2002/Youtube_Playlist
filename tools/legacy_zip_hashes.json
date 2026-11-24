@@ -1,0 +1,103 @@
+{
+  ".gitattributes": [
+    "d90ccf4947d28fe9d952f38397cbb46c54591957ec375025121d5a7e61dbac44"
+  ],
+  ".gitignore": [
+    "d9fbd1ee47172b2f492cd9b0ed30555722cb3f0b2f499955ca7303a7dc5543bf"
+  ],
+  "HANDOFF.md": [
+    "88d852bdc43fe04eaeea09c3b802524cdad31fddda9b419f5cff6fd27b215d30",
+    "abc7603923fdfa4be73f7ef143fd6d76eb1ed0a9ed889acc49f21aa79f6a632b"
+  ],
+  "README.md": [
+    "37c88ac2fcd2608744b2bf554793cbac0b6bcf265bb06fded4872eea93e7b8ee",
+    "d73f77990d89f31955ae1b295eb62bcfa1e27346ab5018f98d1c5dd20e3db279"
+  ],
+  "examples/LOCAL-06.txt": [
+    "ae6c27a36042d16ba3640a6eccbb6b9100f5b4cf679a7b3e76747f021117ac5c"
+  ],
+  "launch.cmd": [
+    "7d11e0deb9c486f283b5bb7a213aca27d43eb0365fe74bfd3cfccd2b545b59b3",
+    "8784d5c103e180755d0836d48f16e74525f9fe247b6e3bc850096251bec66a37"
+  ],
+  "music/app.py": [
+    "45124c34b2202de7c8a90c82af5461af225ddbd82f9d7a3e37e3116d611f66db"
+  ],
+  "music/core/__init__.py": [
+    "e8615e4cc172ef6f45a52e32936a5385226ed7202a1383c8f19704fc27a56c5c"
+  ],
+  "music/core/auth.py": [
+    "ed49924fe5343b555f8c4a5a972a70221740d91a092bb498be2ca94d7ba90665"
+  ],
+  "music/core/checkpoint.py": [
+    "37c383d264fa9f018ee2c4b8bde3eefe0d41a09d4cb46a8dd5796bf06ff58aa8"
+  ],
+  "music/core/matcher.py": [
+    "6fca496c725a3ec205c6d8d2f177fa919f07d892375dc0f5d1a1ef5f446bb3a6"
+  ],
+  "music/core/parser.py": [
+    "1c64be755c6866b889d8da9a8db750d1de5891bb88d0073d75c623d0d09c5569"
+  ],
+  "music/core/playlist.py": [
+    "cd8c77ec47dcc8a82f652b489dbeb6ba1923e69e5f0c9346af8d317cb7dbe907"
+  ],
+  "music/core/public_search.py": [
+    "f0146333fd5b5daa169068ff51c415ff588448f6e8a45ef2f0aabb5f1b99ff93"
+  ],
+  "music/pages/음원_검색.py": [
+    "eed9b187202bffa6d42d6e4d957c087d36e644e2f3ef1d32740c4e40cbe76662"
+  ],
+  "music/requirements.txt": [
+    "897147a1730658f9e0af232cf07b804c6e5763845aa12b04da5e41f8f8cd747b",
+    "999dfc9ed3841957da7264c34f5c854988732c423a63146dc0aeebb97467a4ba"
+  ],
+  "music/run.bat": [
+    "736b57986923a44112047e96ac38b2bdc1437cd79dd1baad53adcd9cd4007684"
+  ],
+  "music/tests/test_parser.py": [
+    "8373bcc913189e493d29b4dc54fe897648182c323cc1fd45e125f93cea478371"
+  ],
+  "music/tests/test_public_search.py": [
+    "d9945e52a654ec9d6b78129c7fedfd9bb69f97e27b7114e9c9aa295bca374f98"
+  ],
+  "music/tests/test_recovery.py": [
+    "d0d99a7dd41c01a30f10a00096d6d2cb4c639493d48499c62a1d7ae163bc354f"
+  ],
+  "music/tests/test_search_auth.py": [
+    "16b1d3782af9f499b78163eabb661adddd1e2b6b5b4c1166ee0438bfe3a13401"
+  ],
+  "video/app.py": [
+    "8e2aa7061563c0c968f435c4d3a981d98eb4436651dd5ff55ea488e33eb86660"
+  ],
+  "video/core/__init__.py": [
+    "59e18f6c55c419c304c19d5ea519cf3051ea404c859f392cc75dc4f7df766cf4"
+  ],
+  "video/core/auth.py": [
+    "ef808811abd80b984b543b223dafc7266936d7c2964bd2fd9c52029912d691c4"
+  ],
+  "video/core/checkpoint.py": [
+    "aa042bb94833315be03b37f424099c229a4a604d36c815a76b7f0d59e502f8d4"
+  ],
+  "video/core/parser.py": [
+    "aeb8ccfca4fe37a42a43a7f9b3c4312c8b090812325e997c3cfb64fbdf31dfbf"
+  ],
+  "video/core/playlist.py": [
+    "687d74f7bca4eff3401df36c0669a1b6343b06e3e49ccc92d2129c21e2eb4562"
+  ],
+  "video/core/register.py": [
+    "d83b6aebf393aa57df19036e74f334a9e254561246f5c9465f51d963de039d79"
+  ],
+  "video/core/searcher.py": [
+    "131d9b19cf59c109a770e1346f842ea1286b85fc379106205e61fb144b31e8aa"
+  ],
+  "video/requirements.txt": [
+    "40e91349ca390e5d011e3241a30bbd277e945bf05e73fffbfc2f56782886a5c9",
+    "8d20b4120bba7e7de5b978d4eedee45e2da2dc43c3347c52cebadd62ff373d29"
+  ],
+  "video/run.bat": [
+    "7099d67876b5b703020d543acda3d96391569f6488463568af3fc28157bbc5d0"
+  ],
+  "video/tests/test_workflow.py": [
+    "ba67ddf89e71475e028073a57e28c2fee58a72d1f17dacd8170557ece52500e3"
+  ]
+}

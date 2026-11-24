@@ -1,0 +1,107 @@
+# 파일로 만드는 YouTube 재생목록
+
+Windows 11에서 사용할 수 있는 두 개의 로컬 웹 앱입니다. 가수와 곡명이 정리된 음원 목록은 `music`에서, 영상 주소·키워드·채널명 목록은 `video`에서 여세요. 직장·집 PC 작업 지시와 결과 회신 양식은 [HANDOFF.md](HANDOFF.md)에 있습니다.
+
+| 하려는 일 | 실행할 파일 | 필요한 계정 설정 |
+| --- | --- | --- |
+| 음원 찾기 및 YouTube Music 재생목록 등록 | `music/run.bat` | 해당 PC에서 YouTube Music 브라우저 인증 |
+| 공개 음원 후보 검색 및 영상 앱으로 보낼 URL TXT 저장 | `music/run.bat` → 사이드바 **음원 검색** | 공개 검색은 로그인 없이 사용 |
+| 일반 영상 찾기 및 최대 50개씩 빠른 링크 생성 | `video/run.bat` | 앱 인증 없이 사용 |
+| 일반 영상을 내 YouTube 계정에 등록 | `video/run.bat` | YouTube Data API v3와 데스크톱 OAuth 설정 |
+
+## Windows에서 처음 열기
+
+1. PC에 Python 3.11 이상을 설치하세요. 각 PC에 같은 버전을 설치하면 실행 환경을 맞추기 쉽습니다. [Windows용 Python](https://www.python.org/downloads/windows/)
+2. 새 설치는 GitHub의 `junis2002/Youtube_Playlist` 저장소에서 `main`을 복제합니다. 기존 ZIP 설치는 같은 C 드라이브 경로에서 Git으로 전환할 수 있습니다. [최초 연결과 업데이트](SYNC.md)
+3. 사용할 앱 폴더의 `run.bat`을 더블클릭하세요. 실행기는 각 앱 폴더에 전용 가상환경(`.venv`)을 만들고 `requirements.txt`를 적용합니다. 첫 설치나 새 의존성을 추가할 때 인터넷 연결이 필요합니다. 음원 앱은 로컬 포트 8501, 영상 앱은 8502를 사용합니다. 실행 창에 표시된 로컬 주소를 **같은 PC의 브라우저**로 여세요. 앱을 사용하는 동안 실행 창을 열어 두고, 종료할 때는 실행 창에서 Ctrl+C를 누르세요.
+
+PC별 실기 결과와 현재 담당 작업을 확인할 수 있습니다. [PC별 작업표](HANDOFF.md)
+
+PowerShell에서 직접 실행할 때는 현재 위치를 **프로젝트 루트**로 한 뒤 아래에서 사용할 앱의 코드 블록 하나를 복사하세요.
+
+```powershell
+.\video\run.bat
+```
+
+```powershell
+.\music\run.bat
+```
+
+## 계정 없이 첫 동작 확인
+
+1. 아래 두 줄을 UTF-8 텍스트 파일로 저장하세요. 같은 공개 영상의 두 URL 형식입니다.
+
+   ```text
+   https://www.youtube.com/watch?v=jNQXAC9IVRw
+   https://youtu.be/jNQXAC9IVRw
+   ```
+
+2. 일반 영상 앱에서 빠른 링크 모드를 선택하고 파일을 업로드하세요. 입력 열과 범위를 확인하고 작업을 시작하세요. URL은 영상 ID로 바로 변환됩니다.
+3. 생성된 빠른 링크에 `jNQXAC9IVRw`가 한 번만 포함되는지 확인하세요. 결과를 CSV로 내려받아 영상 ID도 대조할 수 있습니다. 링크를 열면 브라우저에서 재생할 수 있습니다. 계정에 보관하려면 YouTube의 저장 메뉴를 사용하세요. 재생 대기열의 저장 메뉴는 로그인 상태와 YouTube 화면에 따라 달라질 수 있습니다.
+4. 이어하기도 확인하려면 앱을 종료했다가 같은 PC에서 다시 열고 저장된 작업을 선택하세요. 처리한 URL과 결과가 남아 있어야 합니다.
+
+## 음원 목록으로 YouTube Music 재생목록 만들기
+
+1. **인증**. 재생목록을 소유할 계정으로 Chrome 또는 Edge에서 YouTube Music에 로그인합니다. F12 → **Network**에서 `browse`로 필터링하고 F5로 새로고침하세요. 요청이 안 보이면 라이브러리를 한 번 여세요. `browse` 요청의 **Headers → Request Headers**에서 원본 표시 또는 **Copy request headers**를 선택해 복사합니다. [YouTube Music](https://music.youtube.com/)
+2. 로컬 앱의 인증 입력창에 붙여넣고 인증 파일 생성 및 연결 테스트를 실행하세요. 로그인된 요청에서 `Authorization`, `Cookie`, `X-Goog-AuthUser` 헤더를 함께 복사하세요. 누락되었거나 검증이 실패하면 로그인한 탭에서 새 요청을 복사하세요. 인증이 만료되었을 때도 같은 절차를 사용합니다. 헤더와 `music/browser.json`으로 계정 세션을 사용할 수 있으므로 입력은 본인 PC의 앱에서만 하고 클립보드를 비워 주세요.
+3. **입력**. 표는 첫 행에 열 이름을 넣으세요. CSV(UTF-8 또는 CP949), Excel(.xlsx), 마크다운(.md) 표를 지원합니다. TXT는 아래처럼 한 줄에 한 곡을 넣습니다.
+
+   ```text
+   아이유 - 밤편지
+   윤하 - 사건의 지평선
+   ```
+
+4. 가수·곡명·앨범 열을 확인하고 가수, 앨범, 구간으로 범위를 좁힌 뒤 검색하세요. 곡 검색 결과가 약하면 정제한 쿼리나 영상 검색으로 추가 후보를 찾습니다. 반주가 필요한 항목은 원래 제목에 `Instrumental` 또는 `inst.` 표기를 남겨 두세요.
+5. 낮은 신뢰도와 검색 실패 항목은 후보 제목·가수를 비교하고 원하는 버전을 선택하거나 검색어를 바꿔 다시 검색합니다. 등록할 때는 새 목록의 이름과 공개 범위 또는 기존 내 목록을 선택하세요. 첫 등록은 두 곡 정도의 **비공개** 목록으로 시험할 수 있습니다. 앱은 한 번에 최대 50곡씩 추가합니다.
+6. 결과 화면에서 등록 수와 보완할 항목을 확인하고 CSV 또는 마크다운으로 저장하세요. 검색이 중단되면 같은 PC에서 저장된 작업을 선택해 검색을 이어가세요. 등록이 중단된 경우 그 작업의 기존 대상 목록에 이어서 등록합니다.
+
+## 일반 영상 검색과 계정 등록
+
+TXT는 한 줄에 검색어 또는 YouTube URL 하나를 넣습니다. CSV, XLSX, 마크다운 표에서는 URL 열이나 검색어에 사용할 열 조합(예: 채널명과 제목)을 선택합니다. 삭제·비공개·지역 제한 영상은 URL의 ID가 올바르게 인식되어도 재생이나 등록이 실패할 수 있습니다.
+
+- **검색과 검토**. 일반 검색은 `yt-dlp`로 후보를 최대 5개 가져옵니다. 길이, 제외 키워드, 제목 유사도·조회수·채널 우선순위를 설정하세요. 길이·키워드 필터로 원하는 영상도 제외될 수 있으므로 후보가 부족하면 조건을 확인하세요. 낮은 신뢰도의 결과는 후보를 선택하거나 검색어를 고쳐 보완합니다. URL을 직접 입력하면 검색 단계와 검색 필터를 건너뜁니다.
+- **빠른 링크**. 선택한 ID를 최대 50개씩 묶은 링크를 브라우저로 엽니다. 51개 이상이면 여러 링크가 생깁니다.
+- **계정에 등록**. 공식 API 모드에서 로그인 후 새 재생목록(제목·설명·공개 범위) 또는 기존 목록을 선택하고 등록을 시작하세요. 기존 영상 ID를 조회해 중복을 건너뜁니다. 작업 중단 후에는 같은 계정으로 저장된 작업과 같은 대상 목록을 열어 등록을 이어가세요. 완료 후 재생목록 링크와 리포트를 확인하세요.
+
+### 데스크톱 OAuth 클라이언트 발급
+
+1. Google Cloud Console에서 사용할 프로젝트를 선택하거나 새로 만듭니다. **API 및 서비스 → 라이브러리**에서 **YouTube Data API v3**를 찾아 사용 설정합니다. [YouTube Data API v3](https://console.cloud.google.com/apis/library/youtube.googleapis.com)
+2. **Google Auth Platform**에서 앱 이름, 사용자 지원 이메일, 개발자 연락처를 등록합니다. 개인 Google 계정이면 **대상(Audience) → 외부(External)**를 선택하고, 테스트 상태에서는 실제 로그인할 계정을 **테스트 사용자**에 추가하세요. Workspace 내부용 앱은 조직 정책에 맞는 대상을 선택합니다. [Google Auth Platform](https://console.cloud.google.com/auth/overview)
+3. **데이터 액세스(Data Access) → 범위 추가 또는 삭제**에서 `https://www.googleapis.com/auth/youtube`를 추가하고 저장하세요. 이 앱은 재생목록을 생성하거나 변경하기 위해 해당 권한을 요청합니다.
+4. **클라이언트(Clients) → 클라이언트 만들기 → 데스크톱 앱**을 선택하세요. 생성된 클라이언트의 JSON을 다운로드해 `video/client_secrets.json`으로 두거나 앱의 업로드 버튼에서 파일을 선택합니다. [OAuth 클라이언트](https://console.cloud.google.com/auth/clients)
+5. 로컬 앱에서 **Google 계정 로그인**을 누르고 같은 PC의 브라우저에서 재생목록을 소유할 계정·채널을 확인해 승인하세요. 인증 후 브라우저는 이 PC의 임시 콜백 포트로 돌아옵니다. 성공하면 앱이 `video/token.json`을 저장해 다음 실행에 재사용합니다.
+6. 권한 거부가 뜨면 선택한 프로젝트의 API 활성화, 데스크톱 클라이언트 유형, 테스트 사용자 이메일을 확인하세요. 테스트 상태에서 토큰이 만료되거나 권한을 철회했다면 다시 로그인하세요. `client_secrets.json`과 `token.json`은 각 PC에서 관리합니다.
+
+### 할당량과 이어하기
+
+검색과 빠른 링크 생성을 하면 YouTube Data API 검색 유닛을 소비하지 않습니다. 공식 API 모드에서는 새 목록 생성에 통상 50유닛, 영상 한 건 추가에 50유닛, 기존 목록·항목 조회에 페이지당 1유닛이 듭니다. 새 목록에 영상 190건을 추가하면 **쓰기 요청만 9,550유닛**입니다. 조회·실패 요청이나 같은 프로젝트의 다른 작업까지 고려해 범위를 선택하세요. [YouTube Data API 할당량 비용](https://developers.google.com/youtube/v3/determine_quota_cost)
+
+앱의 일일 사용량은 해당 PC에서 기록한 API 호출을 바탕으로 한 추정치입니다. 두 PC가 같은 Google Cloud 프로젝트를 사용하면 실제 할당량은 공유됩니다. 실제 사용량과 프로젝트 한도는 Cloud Console에서 확인하세요. 할당량 초과로 멈추면 해당 작업을 보존했다가 **미국 태평양 시간 자정** 이후 등록을 이어가세요. 한국에서는 미국 서머타임 기간 오후 4시, 표준시 기간 오후 5시입니다. [Cloud Console 할당량](https://console.cloud.google.com/apis/api/youtube.googleapis.com/quotas)
+
+## 두 PC에서 작업을 이어갈 때
+
+- 코드 버전, PC 이름, 작업 번호, 처리 단계는 [HANDOFF.md](HANDOFF.md)에 따라 회신하세요. 두 PC의 C 드라이브 경로가 같아도 로컬 파일과 체크포인트는 각각 별개입니다.
+- 원칙적으로 한 작업은 시작한 PC에서 마무리하세요. 불가피하게 옮길 때는 먼저 두 PC 모두 앱을 완전히 종료하고 코드 버전을 맞춥니다. 음원 작업은 `music/.data/`, 일반 영상 작업은 `video/data/`를 **폴더 전체**로 보관하세요. 이동할 PC에 기존 작업이 있다면 먼저 별도 경로에 보관하고 두 DB를 덮어쓰거나 병합하지 마세요. 이동한 폴더는 원래의 앱 상대 경로에 둡니다. 체크포인트에 개인 입력 목록과 등록 대상 ID가 포함될 수 있으므로 비공개로 전달하세요.
+- 대상 PC에서는 별도로 같은 YouTube 계정·채널로 인증하고, 저장된 작업의 이름과 대상 재생목록을 확인한 뒤 이어가세요. 인증 파일과 가상환경은 옮길 대상에서 제외하세요. 한 작업을 두 PC에서 동시에 실행하면 원격 재생목록에 중복 반영될 수 있습니다.
+
+## 코드 구성
+
+각 앱의 `app.py`가 화면과 단계 전환을 맡고, `core/parser.py`가 파일을 읽습니다. 음원 앱의 `core/matcher.py`는 곡명·가수와 검색 결과를 비교하고, 영상 앱의 `core/searcher.py`는 검색 후보에 필터와 순위를 적용합니다. 인증은 각 앱의 `core/auth.py`, 원격 재생목록 작업은 `core/playlist.py`에서 처리합니다. 앱별 `requirements.txt`는 설치할 패키지 목록입니다.
+
+## 설치 후 자동 테스트
+
+각 앱을 한 번 실행해 가상환경을 만든 뒤, 프로젝트 루트의 PowerShell에서 아래 블록을 복사하세요. 임시 데이터베이스와 모의 API로 파싱, 검색 결과 판정, 중복 처리, 중단 후 재개를 확인합니다.
+
+```powershell
+Push-Location .\music
+try {
+    .\.venv\Scripts\python.exe -m unittest discover -s tests -v
+    if ($LASTEXITCODE -ne 0) { throw "음원 앱 테스트 실패" }
+} finally { Pop-Location }
+
+Push-Location .\video
+try {
+    .\.venv\Scripts\python.exe -m unittest discover -s tests -v
+    if ($LASTEXITCODE -ne 0) { throw "영상 앱 테스트 실패" }
+} finally { Pop-Location }
+```
