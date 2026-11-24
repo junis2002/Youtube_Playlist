@@ -7,6 +7,11 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# A direct invocation places tools/, rather than the project root, on the import path.
+if __name__ == "__main__" and not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from music.core.review_reply import SNAPSHOT_ID, Recommendation, validate_reply
+
 
 VIDEO_ID = re.compile(r"[0-9A-Za-z_-]{11}")
 MINIMUM_CASES = 50
@@ -82,7 +87,7 @@ def merge_record(row: dict, source: str, cases: dict[str, Case], engines: set[En
             decisions[key] = Decision(pick, source)
 
 
-def load_records(paths: list[Path]) -> tuple[dict[str, Case], set[Engine]]:
+def load_records(paths: list[Path], *, full_ids: bool = False) -> tuple[dict[str, Case], set[Engine]]:
     cases: dict[str, Case] = {}
     engines: set[Engine] = set()
     for path in paths:
@@ -92,7 +97,12 @@ def load_records(paths: list[Path]) -> tuple[dict[str, Case], set[Engine]]:
                     continue
                 source = f"{path}:{number}"
                 try:
-                    merge_record(json.loads(line, object_pairs_hook=unique_keys), source, cases, engines)
+                    row = json.loads(line, object_pairs_hook=unique_keys)
+                    if full_ids and isinstance(row, dict):
+                        raw_id = row.get("case_id")
+                        if not isinstance(raw_id, str) or not SNAPSHOT_ID.fullmatch(raw_id):
+                            raise ValueError("원본 응답 대조에는 앱이 저장한 64자리 전체 case_id가 필요합니다.")
+                    merge_record(row, source, cases, engines)
                 except ValueError as exc:
                     raise ValueError(f"{source} — {exc}") from exc
     return cases, engines
@@ -113,8 +123,38 @@ def outcomes(pairs: list[tuple[Decision, Decision]]) -> dict[str, int]:
     return totals
 
 
-def compare(paths: list[Path]) -> dict:
-    cases, engines = load_records(paths)
+def audit_replies(cases: dict[str, Case], paths: list[Path]) -> dict:
+    candidates = {key: case.candidate_ids for key, case in cases.items()}
+    replies: dict[str, Recommendation] = {}
+    filenames: dict[str, list[str]] = {}
+    for path in paths:
+        try:
+            with path.open(encoding="utf-8-sig") as source:
+                case_id, reply = validate_reply(source.read(8_193), candidates)
+            if "human" not in cases[case_id].common:
+                raise ValueError(f"{case_id}에 기록된 사람 판정이 없습니다.")
+            if case_id in replies and reply != replies[case_id]:
+                raise ValueError(f"{case_id}의 원본 응답이 {filenames[case_id][0]}와 다릅니다.")
+        except ValueError as exc:
+            raise ValueError(f"{path} — {exc}") from exc
+        replies[case_id] = reply
+        files = filenames.setdefault(case_id, [])
+        if str(path) not in files:
+            files.append(str(path))
+
+    observations = []
+    for case_id, reply in replies.items():
+        human = cases[case_id].common["human"].pick
+        observations.append({"case_id": case_id, "files": filenames[case_id],
+                             "human": human, "observed": reply.video_id, "match": human == reply.video_id})
+    matched = sum(row["match"] for row in observations)
+    missing = [key for key, case in cases.items() if "human" in case.common and key not in replies]
+    return {"compared": len(replies), "matched": matched, "differing": len(replies) - matched,
+            "human_without_reply": missing, "observations": observations}
+
+
+def compare(paths: list[Path], *, reply_files: list[Path] | None = None) -> dict:
+    cases, engines = load_records(paths, full_ids=bool(reply_files))
     labeled = [case for case in cases.values() if "human" in case.common]
     baseline_pairs = [(case.common["human"], case.common["baseline"]) for case in labeled
                       if "baseline" in case.common]
@@ -128,10 +168,13 @@ def compare(paths: list[Path]) -> dict:
             "baseline": outcomes([(case.common["human"], case.common["baseline"]) for case in paired]),
             "ai": outcomes([(case.common["human"], case.ai[engine]) for case in paired]),
         })
-    return {"distinct_cases": len(cases), "human_labeled": len(labeled),
+    report = {"distinct_cases": len(cases), "human_labeled": len(labeled),
             "unlabeled": len(cases) - len(labeled), "minimum_paired_cases": MINIMUM_CASES,
             "baseline_unavailable_on_labeled": len(labeled) - len(baseline_pairs),
             "baseline_on_labeled": outcomes(baseline_pairs), "models": groups}
+    if reply_files:
+        report["reply_audit"] = audit_replies(cases, reply_files)
+    return report
 
 
 def display_counts(summary: dict) -> str:
@@ -145,9 +188,11 @@ def main() -> int:
                                      epilog="null은 명시적인 보류이며 생략된 판정은 미확인입니다. 비교는 모델별로 집계합니다.")
     parser.add_argument("files", metavar="FILE", type=Path, nargs="+", help="앱에서 내보낸 UTF-8 JSONL")
     parser.add_argument("--json", action="store_true", help="구조화한 JSON으로 출력")
+    parser.add_argument("--audit-reply", type=Path, action="append", metavar="FILE",
+                        help="원본 응답 JSON과 사람 판정 대조 (여러 번 지정 가능)")
     args = parser.parse_args()
     try:
-        report = compare(args.files)
+        report = compare(args.files, reply_files=args.audit_reply)
     except (OSError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -167,6 +212,13 @@ def main() -> int:
         print(f"사람 판정 중 이 모델의 추천 미기록 {model['ai_unavailable_on_labeled']}")
         print("  같은 사례의 기준선  " + display_counts(model["baseline"]))
         print("  같은 사례의 AI      " + display_counts(model["ai"]))
+    if audit := report.get("reply_audit"):
+        print(f"\n원본 응답 대조 {audit['compared']}건 · 일치 {audit['matched']} · 다름 {audit['differing']}")
+        for row in audit["observations"]:
+            print(f"  {', '.join(row['files'])} · {row['case_id']} · 사람 {row['human'] or '보류'} · "
+                  f"원본 {row['observed'] or '보류'} · {'일치' if row['match'] else '다름'}")
+        if audit["human_without_reply"]:
+            print("  원본 미제공 · " + ", ".join(audit["human_without_reply"]))
     return 0
 
 

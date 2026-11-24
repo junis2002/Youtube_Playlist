@@ -107,3 +107,60 @@ class EvaluationTests(unittest.TestCase):
                 self.assertNotEqual(proc.returncode, 0)
                 self.assertEqual(proc.stdout, b"")
                 self.assertIn(b"bad.jsonl:2", proc.stderr)
+
+    def test_audit_matches_original_replies_without_model_pairs(self):
+        ids = ["a" * 64, "b" * 64, "c" * 64]
+        labels = self.save("사람.jsonl", [case(ids[0], human=None, baseline=A),
+                                        case(ids[1], human=B, baseline=B), case(ids[2], human=A)])
+        first = self.folder / "보류.txt"
+        second = self.folder / "추천.json"
+        reason = "원문에만 있는 설명"
+        raw = json.dumps({"case_id": ids[0], "video_id": None, "reason": reason}, ensure_ascii=False)
+        first.write_text("```json\n" + raw + "\n```", encoding="utf-8-sig")
+        copied = self.folder / "복사본.json"
+        copied.write_text(raw, encoding="utf-8")
+        second.write_text(json.dumps({"case_id": ids[1], "video_id": A, "reason": reason}), encoding="utf-8")
+        args = [sys.executable, str(CLI), str(labels), "--audit-reply", str(first),
+                "--audit-reply", str(first), "--audit-reply", str(copied), "--audit-reply", str(second)]
+        proc = subprocess.run([*args, "--json"], capture_output=True, text=True, check=True)
+        actual = json.loads(proc.stdout)
+        audit = actual.pop("reply_audit")
+        self.assertEqual(actual, compare([labels]))
+        self.assertEqual(actual["models"], [])
+        self.assertEqual((audit["compared"], audit["matched"], audit["differing"]), (2, 1, 1))
+        self.assertEqual(audit["human_without_reply"], [ids[2]])
+        self.assertEqual(audit["observations"], [
+            {"case_id": ids[0], "files": [str(first), str(copied)], "human": None, "observed": None, "match": True},
+            {"case_id": ids[1], "files": [str(second)], "human": B, "observed": A, "match": False},
+        ])
+        text = subprocess.check_output(args, text=True)
+        self.assertIn("일치 1 · 다름 1", text)
+        self.assertNotIn(reason, text)
+
+    def test_audit_rejects_missing_or_ambiguous_evidence(self):
+        key = "a" * 64
+        labels = self.save("labels.jsonl", [case(key, human=A), case("b" * 64, baseline=A)])
+        reply = self.folder / "original.json"
+        valid = {"case_id": key, "video_id": B, "reason": "가수와 앨범 일치"}
+        for field, bad in [("case_id", key[:16]), ("case_id", "c" * 64), ("case_id", "b" * 64),
+                           ("video_id", "other000001"), ("reason", "line one\n줄 둘"), ("reason", "English only")]:
+            with self.subTest(field=field, bad=bad):
+                reply.write_text(json.dumps({**valid, field: bad}), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "original.json"):
+                    compare([labels], reply_files=[reply])
+        duplicate = json.dumps(valid).replace('"video_id":', '"video_id":null, "video_id":')
+        reply.write_text(duplicate, encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "original.json"):
+            compare([labels], reply_files=[reply])
+        reply.write_text(json.dumps(valid), encoding="utf-8")
+        changed = self.folder / "changed.json"
+        changed.write_text(json.dumps({**valid, "video_id": A}), encoding="utf-8")
+        result = subprocess.run([sys.executable, str(CLI), str(labels), "--json", "--audit-reply", str(reply),
+                                 "--audit-reply", str(changed)], capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"changed.json", result.stderr)
+        self.assertIn(b"original.json", result.stderr)
+        self.assertEqual(result.stdout, b"")
+        padded = self.save("padded.jsonl", [case(" " + key, human=A)])
+        with self.assertRaisesRegex(ValueError, "padded.jsonl:1"):
+            compare([padded], reply_files=[reply])

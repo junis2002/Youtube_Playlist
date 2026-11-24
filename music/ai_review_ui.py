@@ -1,5 +1,6 @@
 """음원 후보와 모델의 권고를 비교하는 읽기 전용 검토 화면."""
 
+import hashlib
 import json
 import time
 from collections.abc import Iterable
@@ -31,7 +32,8 @@ def show_track_review(artist: str, title: str, album: str, rows: Iterable[tuple[
 
 def _download_record(label: str, record: dict, filename: str, key: str) -> None:
     data = (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8")
-    st.download_button(label, data, filename, mime="application/x-ndjson", key=key)
+    mime = "application/json" if filename.endswith(".json") else "application/x-ndjson"
+    st.download_button(label, data, filename, mime=mime, key=key)
 
 
 def show_ai_review(case: ReviewCase, *, context: str) -> None:
@@ -75,8 +77,10 @@ def show_ai_review(case: ReviewCase, *, context: str) -> None:
                 evaluation["seen"] = True
                 st.rerun()
             model = st.text_input("Codex 모델 이름", key=key + "_model", max_chars=100,
-                                  help="모델별 평가 파일을 만들 때 사용합니다. 이름을 모르면 비워 두세요.").strip()
-            raw = st.text_area("AI 응답 JSON", key=key + "_raw", max_chars=8192)
+                                  help="이 응답을 생성한 모델 이름을 확인했을 때 입력하세요. 모르면 비워 두세요.",
+                                  on_change=st.session_state.pop, args=(result_key, None)).strip()
+            raw = st.text_area("AI 응답 JSON", key=key + "_raw", max_chars=8192,
+                               on_change=st.session_state.pop, args=(result_key, None))
             if st.button("응답 검증", key=key + "_check", disabled=not raw.strip()):
                 st.session_state.pop(result_key, None)
                 try:
@@ -97,7 +101,8 @@ def show_ai_review(case: ReviewCase, *, context: str) -> None:
                     st.warning(str(exc))
             models = st.session_state.get(key + "_installed")
             if models:
-                model = st.selectbox("설치된 로컬 모델", models, key=key + "_ollama")
+                model = st.selectbox("설치된 로컬 모델", models, key=key + "_ollama",
+                                     on_change=st.session_state.pop, args=(result_key, None))
                 if st.button("이 모델로 추천 받기", key=key + "_ask"):
                     st.session_state.pop(result_key, None)
                     try:
@@ -125,9 +130,21 @@ def show_ai_review(case: ReviewCase, *, context: str) -> None:
         st.text("기존 유사도 판정 · " + display(baseline))
         if elapsed is not None:
             st.caption(f"로컬 추천 소요 시간 {elapsed:.1f}초")
-        if human_record is not None and used_model:
-            record = {**human_record, "provider": provider, "model": used_model, "ai": reply.video_id}
-            _download_record("평가 사례 JSONL 다운로드", record, f"ai-review-{case.case_id[:16]}.jsonl",
+        prefix = case.case_id[:16]
+        if not used_model:
+            observation = {"case_id": case.case_id, "video_id": reply.video_id, "reason": reply.reason}
+            _download_record("관찰 응답 JSON 다운로드", observation, f"ai-observation-{prefix}.json",
+                             key + "_observation")
+            st.caption("모델 이름이 미확인인 응답은 관찰 기록으로 다운로드할 수 있습니다. 이후 모델별 평가에는 새로 실행한 모델 이름과 그 실행의 응답을 함께 입력하세요.")
+            return
+
+        model_fields = {"provider": provider, "model": used_model, "ai": reply.video_id}
+        if human_record is not None:
+            record = {**human_record, **model_fields}
+            _download_record("평가 사례 JSONL 다운로드", record, f"ai-review-{prefix}.jsonl",
                              key + "_export_" + provider)
-        elif human_record is not None:
-            st.caption("‘내 판정 JSONL 다운로드’로 사람 판정을 보관할 수 있습니다. 모델 응답도 내보내려면 모델 이름을 입력하고 다시 검증하세요.")
+        else:
+            record = {"case_id": case.case_id, "candidate_ids": list(choices), **model_fields}
+            model_key = hashlib.sha256(f"{provider}\0{used_model}".encode("utf-8")).hexdigest()[:16]
+            _download_record("모델 응답 JSONL 다운로드", record, f"ai-review-{prefix}-model-{model_key}.jsonl",
+                             key + "_export_" + provider)
