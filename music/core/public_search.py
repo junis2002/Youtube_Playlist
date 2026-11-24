@@ -22,31 +22,55 @@ class SongCandidate:
 
 
 @dataclass(frozen=True)
+class MixedRow:
+    result_type: str
+    video_type: str
+    title: str
+    video_id: str | None
+
+
+@dataclass(frozen=True)
 class SearchResult:
     candidates: list[SongCandidate]
     attempts: list[str]
+    mixed_rows: list[MixedRow] | None = None
 
 
 def _text(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def valid_video_id(value: object) -> str | None:
+    value = _text(value)
+    return value if _VIDEO_ID.fullmatch(value) else None
+
+
+def artist_names(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(
+        name for item in value if isinstance(item, dict) and (name := _text(item.get("name")))
+    )
+
+
 def _song_candidates(rows: list[dict], *, songs_only: bool) -> list[SongCandidate]:
     candidates: list[SongCandidate] = []
     seen_ids: set[str] = set()
     for row in rows:
-        # 통합 검색에는 영상 ID가 있는 뮤직비디오·팟캐스트 등도 섞여 있다.
-        if row.get("resultType", "song" if songs_only else None) != "song":
+        kind = _text(row.get("resultType"))
+        video_type = _text(row.get("videoType"))
+        if row.get("isAvailable") is False or video_type not in {"", "MUSIC_VIDEO_TYPE_ATV"}:
             continue
-        names = row.get("artists")
-        artists = tuple(
-            name for item in (names if isinstance(names, list) else [])
-            if isinstance(item, dict) and (name := _text(item.get("name")))
-        )
+        # Art Track은 혼합 응답에서 video로 분류되기도 한다. 앨범의 재생
+        # 버튼에도 videoId가 있으므로 앨범·목록 등은 곡 후보로 바꾸지 않는다.
+        is_song = kind == "song" or (not kind and songs_only)
+        is_art_track = video_type == "MUSIC_VIDEO_TYPE_ATV" and kind in {"", "video"}
+        if not (is_song or is_art_track):
+            continue
+        artists = artist_names(row.get("artists"))
         album = row.get("album")
         album_name = _text(album.get("name")) if isinstance(album, dict) else _text(album)
-        raw_id = _text(row.get("videoId"))
-        video_id = raw_id if _VIDEO_ID.fullmatch(raw_id) else None
+        video_id = valid_video_id(row.get("videoId"))
         if video_id is not None:
             if video_id in seen_ids:
                 continue
@@ -67,6 +91,7 @@ def search_songs(artist: str, title: str) -> SearchResult:
     clients: dict[str, YTMusic] = {}
     attempts: list[str] = []
     incomplete: list[SongCandidate] = []
+    mixed_rows = None
     # ytmusicapi는 곡 검색의 섹션 제목을 응답 언어별로 판별한다.
     for language, kind, label in (
         ("ko", "songs", "한국어 곡 검색"),
@@ -87,11 +112,20 @@ def search_songs(artist: str, title: str) -> SearchResult:
             attempts.append(f"{label} · 검색 요청 또는 응답 처리 실패")
             raise PublicSearchError(" / ".join(attempts)) from None
         attempts.append(f"{label} · 응답 {len(rows)}건 · 음원 후보 {len(candidates)}건")
+        if kind is None:
+            mixed_rows = [
+                MixedRow(
+                    result_type=_text(row.get("resultType")),
+                    video_type=_text(row.get("videoType")),
+                    title=_text(row.get("title")) or _text(row.get("artist")),
+                    video_id=valid_video_id(row.get("videoId")),
+                ) for row in rows
+            ]
         if any(song.video_id for song in candidates):
-            return SearchResult(candidates, attempts)
+            return SearchResult(candidates, attempts, mixed_rows)
         if candidates and not incomplete:
             incomplete = candidates
-    return SearchResult(incomplete, attempts)
+    return SearchResult(incomplete, attempts, mixed_rows)
 
 
 def export_url(candidate: SongCandidate) -> bytes:

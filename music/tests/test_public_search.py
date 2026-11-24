@@ -115,6 +115,22 @@ class PublicSearchTests(unittest.TestCase):
         for label, attempt in zip(("한국어 곡 검색", "영어 곡 검색", "영어 통합 검색"), result.attempts):
             self.assertIn(label, attempt)
 
+    def test_mixed_rows_keep_diagnostics_and_only_available_audio_is_selectable(self) -> None:
+        mixed = [
+            {"resultType": "video", "videoType": "MUSIC_VIDEO_TYPE_ATV", "videoId": "track000001", "title": "원곡"},
+            {"resultType": "video", "videoType": "MUSIC_VIDEO_TYPE_OMV", "videoId": "video000001"},
+            {"resultType": "song", "videoType": "MUSIC_VIDEO_TYPE_UGC", "videoId": "cover000001"},
+            {"resultType": "album", "videoType": "MUSIC_VIDEO_TYPE_ATV", "videoId": "album000001"},
+            {"resultType": "song", "videoId": "block000001", "isAvailable": False},
+            {"resultType": "artist", "artist": "가수"},
+        ]
+        self.replies.update({("ko", "songs"): [], ("en", "songs"): [], ("en", None): mixed})
+        result = search_songs("가수", "원곡")
+        self.assertEqual([song.video_id for song in result.candidates], ["track000001"])
+        self.assertEqual([row.video_id for row in result.mixed_rows], [row.get("videoId") for row in mixed])
+        self.assertEqual(result.mixed_rows[1].video_type, "MUSIC_VIDEO_TYPE_OMV")
+        self.assertEqual((result.mixed_rows[-1].result_type, result.mixed_rows[-1].title), ("artist", "가수"))
+
     def test_timeout_or_http_failure_after_empty_response_is_reported_without_raw_details(self) -> None:
         for error in (Timeout("PRIVATE-DETAIL"), HTTPError("PRIVATE-DETAIL")):
             with self.subTest(error=type(error).__name__):
