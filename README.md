@@ -83,7 +83,7 @@ $reviewFiles = (Get-ChildItem -Path .\local-reports -Filter 'ai-review-*.jsonl' 
 if ($reviewFiles) { py -3 tools/evaluate_ai_reviews.py @reviewFiles }
 ```
 
-모델명을 모르는 과거 응답도 저장된 사람 판정과 곡별로 대조할 수 있습니다. 사람 JSONL을 지정한 뒤 원래 응답 JSON마다 `--audit-reply`를 한 번씩 붙이세요. 전체 사례 ID가 일치해야 하며, 도구는 사람의 선택과 응답이 일치했는지를 출력합니다. 모델별 평가 건수는 모델 이름이 기록된 응답으로 계산합니다. [LOCAL-10 대조 예시](HANDOFF.md#local-10--직장-pc에-전달할-프롬프트)
+모델명을 모르는 과거 응답도 저장된 사람 판정과 곡별로 대조할 수 있습니다. 사람 JSONL을 지정한 뒤 원래 응답 JSON마다 `--audit-reply`를 한 번씩 붙이세요. 전체 사례 ID가 일치해야 하며, 도구는 사람의 선택과 응답이 일치했는지를 출력합니다. 모델별 평가 건수는 모델 이름이 기록된 응답으로 계산합니다. [LOCAL-10 대조 예시](HANDOFF.md#local-10-재개)
 
 ## 일반 영상 검색과 계정 등록
 
