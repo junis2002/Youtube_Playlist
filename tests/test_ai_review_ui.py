@@ -49,6 +49,20 @@ class CandidateReviewScreenTests(unittest.TestCase):
         return "\n".join(str(item.value) for kind in ("text", "info", "success", "warning", "error", "markdown", "caption")
                          for item in self.page.get(kind))
 
+    def downloads(self):
+        import streamlit as st
+
+        with patch.object(st, "download_button", wraps=st.download_button) as download:
+            self.run_page()
+        records = {}
+        for call in download.call_args_list:
+            label, data, filename = call.args
+            text = data.decode("utf-8")
+            self.assertTrue(text.endswith("\n"))
+            self.assertEqual(len(text.splitlines()), 1)
+            records[label] = (filename, json.loads(text))
+        return records
+
     def test_recommendation_and_abstention_preserve_manual_selection(self):
         self.assertTrue(any(e.label == "AI 후보 검토" for e in self.page.expander))
         self.assertIsNone(self.page.selectbox(key="actual_choice").value)
@@ -82,6 +96,8 @@ class CandidateReviewScreenTests(unittest.TestCase):
         self.assertIsNone(self.page.selectbox(key="actual_choice").value)
 
     def test_evaluation_requires_an_independent_judgment_and_model_identity(self):
+        case_id = self.page.session_state.fixture_case_id
+        self.assertEqual(self.downloads(), {})
         human = next(w for w in self.page.selectbox if w.label == "평가용 내 판정")
         self.assertIsNone(human.value)
         human.set_value("live0000002")
@@ -89,13 +105,37 @@ class CandidateReviewScreenTests(unittest.TestCase):
         next(b for b in self.page.button if b.label == "내 판정 기록").click()
         self.run_page()
         self.assertIn("평가용 내 판정 · 바람 (Live)", self.messages())
+        reference = {"case_id": case_id, "candidate_ids": ["studio00001", "live0000002"],
+                     "human": "live0000002", "baseline": "studio00001"}
+        independent = {"내 판정 JSONL 다운로드": (f"ai-review-{case_id[:16]}-human.jsonl", reference)}
+        self.assertEqual(self.downloads(), independent)
         self.submit("studio00001", "앨범 수록 원곡과 일치합니다.")
-        self.assertFalse(self.page.get("download_button"))
+        self.assertEqual(self.downloads(), independent)
         next(w for w in self.page.text_input if w.label == "Codex 모델 이름").set_value("test-model")
         self.submit("studio00001", "앨범 수록 원곡과 일치합니다.")
-        self.assertTrue(any(d.label == "평가 사례 JSONL 다운로드" for d in self.page.get("download_button")))
+        paired = {**reference, "model": "test-model", "provider": "codex", "ai": "studio00001"}
+        self.assertEqual(self.downloads(), {
+            **independent, "평가 사례 JSONL 다운로드": (f"ai-review-{case_id[:16]}.jsonl", paired),
+        })
         self.assertIsNone(self.page.selectbox(key="actual_choice").value)
 
+    def test_human_abstention_can_be_exported_before_running_a_model(self):
+        from streamlit.testing.v1 import AppTest
+
+        next(w for w in self.page.selectbox if w.label == "평가용 내 판정").set_value("")
+        self.run_page()
+        next(b for b in self.page.button if b.label == "내 판정 기록").click()
+        self.run_page()
+        case_id = self.page.session_state.fixture_case_id
+        self.assertEqual(self.downloads(), {"내 판정 JSONL 다운로드": (f"ai-review-{case_id[:16]}-human.jsonl", {
+            "case_id": case_id, "candidate_ids": ["studio00001", "live0000002"], "human": None, "baseline": "studio00001",
+        })})
+
+        # 같은 후보를 제시하면 사람 판정이 없는 세션과 모델 요청 전체가 일치한다.
+        unlabeled = AppTest.from_string(APP, default_timeout=15).run()
+        for page in (self.page, unlabeled):
+            next(b for b in page.button if b.label == "Codex 요청 보기").click().run()
+        self.assertEqual(self.page.code[0].value, unlabeled.code[0].value)
     def test_unavailable_local_models_do_not_display_another_providers_response(self):
         self.submit("studio00001", "앨범의 원곡입니다.")
         with patch("music.core.local_model.list_models", return_value=[]) as list_models:

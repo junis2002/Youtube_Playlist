@@ -29,6 +29,11 @@ def show_track_review(artist: str, title: str, album: str, rows: Iterable[tuple[
     show_ai_review(case, context=context)
 
 
+def _download_record(label: str, record: dict, filename: str, key: str) -> None:
+    data = (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8")
+    st.download_button(label, data, filename, mime="application/x-ndjson", key=key)
+
+
 def show_ai_review(case: ReviewCase, *, context: str) -> None:
     choices = {item.video_id: item for item in case.candidates}
 
@@ -43,8 +48,13 @@ def show_ai_review(case: ReviewCase, *, context: str) -> None:
     evaluation = st.session_state.setdefault("evaluation_" + case.case_id, {})
     with st.expander("AI 후보 검토"):
         st.caption("모델은 현재 후보의 곡명·가수·앨범을 비교합니다. 최종 곡은 아래에서 직접 선택하세요.")
+        human_record = None
         if "human" in evaluation:
             st.text("평가용 내 판정 · " + display(evaluation["human"]))
+            human_record = {"case_id": case.case_id, "candidate_ids": list(choices),
+                            "human": evaluation["human"], "baseline": baseline_id(case)}
+            _download_record("내 판정 JSONL 다운로드", human_record, f"ai-review-{case.case_id[:16]}-human.jsonl",
+                             key + "_export_human")
         elif not evaluation.get("seen"):
             human_pick = st.selectbox("평가용 내 판정", ["", *choices], index=None, format_func=display,
                                       key=key + "_human", placeholder="선택 사항 · 모델 답을 보기 전에 판정하세요")
@@ -111,15 +121,13 @@ def show_ai_review(case: ReviewCase, *, context: str) -> None:
         st.caption("추천 출처 · " + source + (" · " + used_model if used_model else ""))
         st.text("AI 추천 · " + display(reply.video_id))
         st.text(reply.reason)
-        baseline = baseline_id(case)
+        baseline = human_record["baseline"] if human_record is not None else baseline_id(case)
         st.text("기존 유사도 판정 · " + display(baseline))
         if elapsed is not None:
             st.caption(f"로컬 추천 소요 시간 {elapsed:.1f}초")
-        if "human" in evaluation and used_model:
-            record = {"case_id": case.case_id, "candidate_ids": list(choices), "human": evaluation["human"],
-                      "baseline": baseline, "provider": provider, "model": used_model, "ai": reply.video_id}
-            st.download_button("평가 사례 JSONL 다운로드", (json.dumps(record, ensure_ascii=False) + "\n").encode(),
-                               f"ai-review-{case.case_id[:16]}.jsonl", mime="application/x-ndjson",
-                               key=key + "_export_" + provider)
-        elif "human" in evaluation:
-            st.caption("이 사례를 내보내려면 사용한 모델 이름을 입력하고 응답을 다시 검증하세요.")
+        if human_record is not None and used_model:
+            record = {**human_record, "provider": provider, "model": used_model, "ai": reply.video_id}
+            _download_record("평가 사례 JSONL 다운로드", record, f"ai-review-{case.case_id[:16]}.jsonl",
+                             key + "_export_" + provider)
+        elif human_record is not None:
+            st.caption("‘내 판정 JSONL 다운로드’로 사람 판정을 보관할 수 있습니다. 모델 응답도 내보내려면 모델 이름을 입력하고 다시 검증하세요.")
